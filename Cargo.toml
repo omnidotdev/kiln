@@ -11,7 +11,7 @@ repository = "https://github.com/omnidotdev/kiln"
 
 [workspace.dependencies]
 kiln-core = { path = "crates/kiln-core" }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

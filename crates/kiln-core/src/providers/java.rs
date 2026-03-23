@@ -136,9 +136,11 @@ mod tests {
         assert_eq!(plan.provider, "java");
         assert_eq!(plan.stages.len(), 2);
         assert!(plan.stages[0].commands[0].run.contains("mvn"));
-        assert!(plan.stages[0].commands[0]
-            .cache_mounts
-            .contains(&"/root/.m2".to_string()));
+        assert!(
+            plan.stages[0].commands[0]
+                .cache_mounts
+                .contains(&"/root/.m2".to_string())
+        );
         assert_eq!(plan.start_command.as_deref(), Some("java -jar app.jar"));
         assert_eq!(plan.port, Some(8080));
     }
@@ -150,8 +152,10 @@ mod tests {
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = JavaProvider.plan(&ctx).unwrap();
         assert!(plan.stages[0].commands[0].run.contains("gradle"));
-        assert!(plan.stages[0].commands[0]
-            .cache_mounts
-            .contains(&"/root/.gradle".to_string()));
+        assert!(
+            plan.stages[0].commands[0]
+                .cache_mounts
+                .contains(&"/root/.gradle".to_string())
+        );
     }
 }

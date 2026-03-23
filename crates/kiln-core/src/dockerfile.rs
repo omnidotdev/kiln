@@ -17,10 +17,7 @@ pub fn generate(plan: &BuildPlan) -> String {
         }
 
         for copy in &stage.copy_from {
-            lines.push(format!(
-                "COPY --from={} {} {}",
-                copy.stage, copy.src, copy.dest
-            ));
+            lines.push(format!("COPY --from={} {} {}", copy.stage, copy.src, copy.dest));
         }
 
         for cmd in &stage.commands {

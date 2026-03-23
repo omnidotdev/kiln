@@ -53,27 +53,18 @@ impl PythonProvider {
 
     fn start_command(framework: Option<&PythonFramework>, entry: Option<&str>) -> Option<String> {
         match framework {
-            Some(PythonFramework::Django) => {
+            Some(PythonFramework::Django) =>
+            {
                 #[allow(clippy::literal_string_with_formatting_args)]
                 Some("gunicorn --bind 0.0.0.0:${PORT:-8000} config.wsgi:application".to_string())
             }
             Some(PythonFramework::FastApi) => {
-                let module = entry
-                    .unwrap_or("main.py")
-                    .strip_suffix(".py")
-                    .unwrap_or("main");
-                Some(format!(
-                    "uvicorn {module}:app --host 0.0.0.0 --port ${{PORT:-8000}}"
-                ))
+                let module = entry.unwrap_or("main.py").strip_suffix(".py").unwrap_or("main");
+                Some(format!("uvicorn {module}:app --host 0.0.0.0 --port ${{PORT:-8000}}"))
             }
             Some(PythonFramework::Flask) => {
-                let module = entry
-                    .unwrap_or("app.py")
-                    .strip_suffix(".py")
-                    .unwrap_or("app");
-                Some(format!(
-                    "gunicorn --bind 0.0.0.0:${{PORT:-8000}} {module}:app"
-                ))
+                let module = entry.unwrap_or("app.py").strip_suffix(".py").unwrap_or("app");
+                Some(format!("gunicorn --bind 0.0.0.0:${{PORT:-8000}} {module}:app"))
             }
             None => entry.map(|e| format!("python {e}")),
         }
@@ -221,9 +212,7 @@ impl PythonPm {
     const fn install_target(&self) -> &str {
         match self {
             Self::Uv => "/app/.venv",
-            Self::Pip | Self::Poetry | Self::Pipenv | Self::Pdm => {
-                "/usr/local/lib/python3.13/site-packages"
-            }
+            Self::Pip | Self::Poetry | Self::Pipenv | Self::Pdm => "/usr/local/lib/python3.13/site-packages",
         }
     }
 }

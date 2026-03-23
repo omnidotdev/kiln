@@ -97,10 +97,7 @@ fn cmd_detect(path: &std::path::Path) -> std::result::Result<(), Box<dyn std::er
     }
 }
 
-fn cmd_plan(
-    path: &std::path::Path,
-    emit: Option<&str>,
-) -> std::result::Result<(), Box<dyn std::error::Error>> {
+fn cmd_plan(path: &std::path::Path, emit: Option<&str>) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let plan = kiln_core::detect_and_plan(path)?;
 
     match emit {

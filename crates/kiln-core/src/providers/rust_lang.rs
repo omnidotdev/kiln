@@ -8,15 +8,11 @@ pub struct RustProvider;
 impl RustProvider {
     fn binary_name(ctx: &AppContext) -> String {
         let content = ctx.read_file("Cargo.toml").ok().unwrap_or_default();
-        let parsed: toml::Value = toml::from_str(&content)
-            .unwrap_or_else(|_| toml::Value::Table(toml::Table::default()));
+        let parsed: toml::Value =
+            toml::from_str(&content).unwrap_or_else(|_| toml::Value::Table(toml::Table::default()));
 
         if let Some(bins) = parsed.get("bin").and_then(|b| b.as_array()) {
-            if let Some(name) = bins
-                .first()
-                .and_then(|b| b.get("name"))
-                .and_then(|n| n.as_str())
-            {
+            if let Some(name) = bins.first().and_then(|b| b.get("name")).and_then(|n| n.as_str()) {
                 return name.to_string();
             }
         }
@@ -53,10 +49,7 @@ impl Provider for RustProvider {
             copy_from: vec![],
             commands: vec![Command {
                 run: format!("cargo build --release --bin {binary}"),
-                cache_mounts: vec![
-                    "/usr/local/cargo/registry".to_string(),
-                    "/app/target".to_string(),
-                ],
+                cache_mounts: vec!["/usr/local/cargo/registry".to_string(), "/app/target".to_string()],
             }],
         };
 
@@ -111,10 +104,7 @@ mod tests {
         .unwrap();
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = RustProvider.plan(&ctx).unwrap();
-        assert_eq!(
-            plan.start_command.as_deref(),
-            Some("/usr/local/bin/my-service")
-        );
+        assert_eq!(plan.start_command.as_deref(), Some("/usr/local/bin/my-service"));
     }
 
     #[test]
@@ -128,11 +118,11 @@ mod tests {
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = RustProvider.plan(&ctx).unwrap();
         let build = &plan.stages[0];
-        assert!(build.commands[0]
-            .cache_mounts
-            .contains(&"/usr/local/cargo/registry".to_string()));
-        assert!(build.commands[0]
-            .cache_mounts
-            .contains(&"/app/target".to_string()));
+        assert!(
+            build.commands[0]
+                .cache_mounts
+                .contains(&"/usr/local/cargo/registry".to_string())
+        );
+        assert!(build.commands[0].cache_mounts.contains(&"/app/target".to_string()));
     }
 }

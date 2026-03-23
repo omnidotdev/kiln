@@ -235,9 +235,11 @@ mod tests {
         let plan = NodeProvider.plan(&ctx).unwrap();
         assert_eq!(plan.provider, "node");
         assert!(plan.stages[0].commands[0].run.contains("npm ci"));
-        assert!(plan.stages[0].commands[0]
-            .cache_mounts
-            .contains(&"/root/.npm".to_string()));
+        assert!(
+            plan.stages[0].commands[0]
+                .cache_mounts
+                .contains(&"/root/.npm".to_string())
+        );
     }
 
     #[test]

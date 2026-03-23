@@ -100,10 +100,7 @@ mod tests {
         let plan = DotnetProvider.plan(&ctx).unwrap();
         assert_eq!(plan.provider, "dotnet");
         assert_eq!(plan.stages.len(), 2);
-        assert_eq!(
-            plan.start_command.as_deref(),
-            Some("dotnet WebApi.dll")
-        );
+        assert_eq!(plan.start_command.as_deref(), Some("dotnet WebApi.dll"));
         assert_eq!(plan.port, Some(8080));
     }
 }

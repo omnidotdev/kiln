@@ -7,10 +7,7 @@ pub struct ShellProvider;
 
 impl ShellProvider {
     fn detect_entry(ctx: &AppContext) -> Option<&'static str> {
-        ["main.sh", "start.sh"]
-            .iter()
-            .copied()
-            .find(|name| ctx.has_file(name))
+        ["main.sh", "start.sh"].iter().copied().find(|name| ctx.has_file(name))
     }
 }
 

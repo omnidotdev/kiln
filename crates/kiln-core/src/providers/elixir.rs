@@ -7,9 +7,7 @@ pub struct ElixirProvider;
 
 impl ElixirProvider {
     fn is_phoenix(ctx: &AppContext) -> bool {
-        ctx.read_file("mix.exs")
-            .ok()
-            .is_some_and(|c| c.contains(":phoenix"))
+        ctx.read_file("mix.exs").ok().is_some_and(|c| c.contains(":phoenix"))
     }
 }
 
@@ -35,11 +33,9 @@ impl Provider for ElixirProvider {
             }],
             copy_from: vec![],
             commands: vec![Command {
-                run: "mix local.hex --force && mix local.rebar --force && mix deps.get && MIX_ENV=prod mix release".to_string(),
-                cache_mounts: vec![
-                    "/root/.mix".to_string(),
-                    "/root/.hex".to_string(),
-                ],
+                run: "mix local.hex --force && mix local.rebar --force && mix deps.get && MIX_ENV=prod mix release"
+                    .to_string(),
+                cache_mounts: vec!["/root/.mix".to_string(), "/root/.hex".to_string()],
             }],
         };
 

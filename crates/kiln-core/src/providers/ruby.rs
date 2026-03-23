@@ -7,11 +7,7 @@ pub struct RubyProvider;
 
 impl RubyProvider {
     fn is_rails(ctx: &AppContext) -> bool {
-        ctx.has_file("config/routes.rb")
-            || ctx
-                .read_file("Gemfile")
-                .ok()
-                .is_some_and(|c| c.contains("rails"))
+        ctx.has_file("config/routes.rb") || ctx.read_file("Gemfile").ok().is_some_and(|c| c.contains("rails"))
     }
 }
 
@@ -108,11 +104,7 @@ mod tests {
     #[test]
     fn detects_rails() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("Gemfile"),
-            "source 'https://rubygems.org'\ngem 'rails'",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("Gemfile"), "source 'https://rubygems.org'\ngem 'rails'").unwrap();
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = RubyProvider.plan(&ctx).unwrap();
         assert_eq!(

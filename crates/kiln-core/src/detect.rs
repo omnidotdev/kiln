@@ -50,12 +50,7 @@ impl AppContext {
         let path = self.root.join(dir);
         std::fs::read_dir(&path)
             .ok()
-            .map(|entries| {
-                entries
-                    .filter_map(std::result::Result::ok)
-                    .map(|e| e.path())
-                    .collect()
-            })
+            .map(|entries| entries.filter_map(std::result::Result::ok).map(|e| e.path()).collect())
             .unwrap_or_default()
     }
 

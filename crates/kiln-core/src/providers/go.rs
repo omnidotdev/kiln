@@ -102,11 +102,7 @@ mod tests {
     #[test]
     fn detects_go_project() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("go.mod"),
-            "module github.com/user/myapp\n\ngo 1.24\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module github.com/user/myapp\n\ngo 1.24\n").unwrap();
         let ctx = AppContext::new(dir.path()).unwrap();
         assert!(GoProvider.detect(&ctx));
     }
@@ -114,11 +110,7 @@ mod tests {
     #[test]
     fn go_plan_stages() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("go.mod"),
-            "module github.com/user/myapp\n\ngo 1.24\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module github.com/user/myapp\n\ngo 1.24\n").unwrap();
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = GoProvider.plan(&ctx).unwrap();
         assert_eq!(plan.stages.len(), 3);
@@ -130,11 +122,7 @@ mod tests {
     #[test]
     fn go_binary_name_from_module() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("go.mod"),
-            "module github.com/user/myapp\n\ngo 1.24\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module github.com/user/myapp\n\ngo 1.24\n").unwrap();
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = GoProvider.plan(&ctx).unwrap();
         assert_eq!(plan.start_command.as_deref(), Some("/bin/myapp"));

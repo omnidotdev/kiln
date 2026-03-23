@@ -7,10 +7,7 @@ pub enum Error {
     NoProviderDetected(PathBuf),
 
     #[error("failed to read {path}: {source}")]
-    ReadFile {
-        path: PathBuf,
-        source: std::io::Error,
-    },
+    ReadFile { path: PathBuf, source: std::io::Error },
 
     #[error("failed to parse {path}: {message}")]
     Parse { path: PathBuf, message: String },

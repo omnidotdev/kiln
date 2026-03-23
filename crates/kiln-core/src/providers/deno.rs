@@ -10,11 +10,7 @@ impl DenoProvider {
         for config in &["deno.json", "deno.jsonc"] {
             if let Ok(content) = ctx.read_file(config) {
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if parsed
-                        .get("tasks")
-                        .and_then(|t| t.get("start"))
-                        .is_some()
-                    {
+                    if parsed.get("tasks").and_then(|t| t.get("start")).is_some() {
                         return Some("deno task start".to_string());
                     }
                 }
@@ -35,9 +31,7 @@ impl Provider for DenoProvider {
     }
 
     fn plan(&self, ctx: &AppContext) -> Result<BuildPlan> {
-        let start_cmd =
-            Self::detect_start_command(ctx)
-                .unwrap_or_else(|| "deno run --allow-net main.ts".to_string());
+        let start_cmd = Self::detect_start_command(ctx).unwrap_or_else(|| "deno run --allow-net main.ts".to_string());
 
         let stage = Stage {
             name: "runtime".to_string(),
@@ -105,9 +99,6 @@ mod tests {
         std::fs::write(dir.path().join("deno.json"), "{}").unwrap();
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = DenoProvider.plan(&ctx).unwrap();
-        assert_eq!(
-            plan.start_command.as_deref(),
-            Some("deno run --allow-net main.ts")
-        );
+        assert_eq!(plan.start_command.as_deref(), Some("deno run --allow-net main.ts"));
     }
 }

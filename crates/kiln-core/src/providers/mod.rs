@@ -1,7 +1,17 @@
+mod cpp;
+mod deno;
+mod dotnet;
+mod elixir;
+mod gleam;
 mod go;
+mod java;
 mod node;
+mod php;
 mod python;
+mod ruby;
 mod rust_lang;
+mod shell;
+mod static_site;
 
 use crate::detect::AppContext;
 use crate::error::Result;
@@ -29,9 +39,19 @@ pub trait Provider: Send + Sync {
 #[must_use]
 pub fn all() -> Vec<Box<dyn Provider>> {
     vec![
+        Box::new(deno::DenoProvider),
+        Box::new(gleam::GleamProvider),
+        Box::new(elixir::ElixirProvider),
         Box::new(rust_lang::RustProvider),
         Box::new(go::GoProvider),
+        Box::new(dotnet::DotnetProvider),
+        Box::new(java::JavaProvider),
+        Box::new(ruby::RubyProvider),
+        Box::new(php::PhpProvider),
         Box::new(python::PythonProvider),
         Box::new(node::NodeProvider),
+        Box::new(cpp::CppProvider),
+        Box::new(shell::ShellProvider),
+        Box::new(static_site::StaticSiteProvider),
     ]
 }

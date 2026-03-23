@@ -86,6 +86,7 @@ fn main() {
     }
 }
 
+#[allow(clippy::option_if_let_else)]
 fn cmd_detect(path: &std::path::Path) -> std::result::Result<(), Box<dyn std::error::Error>> {
     if let Some(provider) = kiln_core::detect(path)? {
         println!("{provider}");

@@ -163,7 +163,7 @@ impl PackageManager {
             Self::Npm => "npm ci".to_string(),
             Self::Yarn => "yarn install --frozen-lockfile".to_string(),
             Self::Pnpm => "pnpm install --frozen-lockfile".to_string(),
-            Self::Bun => "bun install --frozen-lockfile".to_string(),
+            Self::Bun => "bun install".to_string(),
         }
     }
 

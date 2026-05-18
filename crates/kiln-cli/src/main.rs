@@ -47,6 +47,21 @@ enum Commands {
         /// `BuildKit` daemon address
         #[arg(long, env = "BUILDKIT_HOST", default_value = "tcp://127.0.0.1:1234")]
         buildkit_addr: String,
+        /// Registry ref to import previously-pushed cache layers from
+        /// (e.g. `registry/app:buildcache`). When set, buildctl is
+        /// invoked with `--import-cache type=registry,ref=<value>`.
+        #[arg(long)]
+        cache_from: Option<String>,
+        /// Registry ref to export this build's layers to as cache. When
+        /// set, buildctl is invoked with `--export-cache type=registry,
+        /// ref=<value>,mode=max,push=true`. Typically equals `--cache-from`.
+        #[arg(long)]
+        cache_to: Option<String>,
+        /// Treat the registry as insecure (HTTP / self-signed TLS).
+        /// Required for in-cluster Manifold (10.0.1.10:30501) and any
+        /// other registry not behind a public-CA TLS endpoint.
+        #[arg(long)]
+        registry_insecure: bool,
     },
 }
 
@@ -70,6 +85,9 @@ fn main() {
             path,
             dockerfile,
             buildkit_addr,
+            cache_from,
+            cache_to,
+            registry_insecure,
         } => cmd_build(
             source.as_deref(),
             git_ref.as_deref(),
@@ -77,6 +95,9 @@ fn main() {
             &path,
             dockerfile.as_deref(),
             &buildkit_addr,
+            cache_from.as_deref(),
+            cache_to.as_deref(),
+            registry_insecure,
         ),
     };
 
@@ -112,7 +133,7 @@ fn cmd_plan(path: &std::path::Path, emit: Option<&str>) -> std::result::Result<(
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn cmd_build(
     source: Option<&str>,
     git_ref: Option<&str>,
@@ -120,6 +141,9 @@ fn cmd_build(
     path: &std::path::Path,
     dockerfile: Option<&std::path::Path>,
     buildkit_addr: &str,
+    cache_from: Option<&str>,
+    cache_to: Option<&str>,
+    registry_insecure: bool,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Clone source repo if provided
     let work_dir = if let Some(url) = source {
@@ -176,23 +200,15 @@ fn cmd_build(
 
     // Build with buildctl
     tracing::info!(dest, "building image");
-    let status = std::process::Command::new("buildctl")
-        .args([
-            "--addr",
-            buildkit_addr,
-            "build",
-            "--frontend",
-            "dockerfile.v0",
-            "--local",
-            &format!("context={}", work_dir.display()),
-            "--local",
-            &format!("dockerfile={}", work_dir.display()),
-            "--opt",
-            "filename=Dockerfile.kiln",
-            "--output",
-            &format!("type=image,name={dest},push=true"),
-        ])
-        .status()?;
+    let args = build_buildctl_args(
+        buildkit_addr,
+        &work_dir,
+        dest,
+        cache_from,
+        cache_to,
+        registry_insecure,
+    );
+    let status = std::process::Command::new("buildctl").args(&args).status()?;
 
     if !status.success() {
         return Err("buildctl build failed".into());
@@ -200,4 +216,139 @@ fn cmd_build(
 
     tracing::info!(dest, "image built and pushed");
     Ok(())
+}
+
+/// Translate `cmd_build`'s effective config into the argv passed to
+/// `buildctl`. Pulled out as a pure function so the cache + insecure flag
+/// wiring is unit-testable without spawning a process.
+fn build_buildctl_args(
+    buildkit_addr: &str,
+    work_dir: &std::path::Path,
+    dest: &str,
+    cache_from: Option<&str>,
+    cache_to: Option<&str>,
+    registry_insecure: bool,
+) -> Vec<String> {
+    let insecure_suffix = if registry_insecure {
+        ",registry.insecure=true"
+    } else {
+        ""
+    };
+
+    let mut args = vec![
+        "--addr".to_string(),
+        buildkit_addr.to_string(),
+        "build".to_string(),
+        "--frontend".to_string(),
+        "dockerfile.v0".to_string(),
+        "--local".to_string(),
+        format!("context={}", work_dir.display()),
+        "--local".to_string(),
+        format!("dockerfile={}", work_dir.display()),
+        "--opt".to_string(),
+        "filename=Dockerfile.kiln".to_string(),
+    ];
+
+    if let Some(cache_ref) = cache_from {
+        args.push("--import-cache".to_string());
+        args.push(format!("type=registry,ref={cache_ref}{insecure_suffix}"));
+    }
+
+    if let Some(cache_ref) = cache_to {
+        args.push("--export-cache".to_string());
+        args.push(format!(
+            "type=registry,ref={cache_ref},mode=max,push=true{insecure_suffix}"
+        ));
+    }
+
+    args.push("--output".to_string());
+    args.push(format!("type=image,name={dest},push=true{insecure_suffix}"));
+
+    args
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_buildctl_args;
+    use std::path::Path;
+
+    #[test]
+    fn omits_cache_flags_when_unset() {
+        let args = build_buildctl_args(
+            "tcp://127.0.0.1:1234",
+            Path::new("/workspace"),
+            "registry.example/app:abc123",
+            None,
+            None,
+            false,
+        );
+        assert!(args.iter().all(|a| a != "--import-cache"));
+        assert!(args.iter().all(|a| a != "--export-cache"));
+        assert!(args
+            .iter()
+            .any(|a| a == "type=image,name=registry.example/app:abc123,push=true"));
+    }
+
+    #[test]
+    fn wires_cache_from_and_cache_to_with_insecure_suffix() {
+        let args = build_buildctl_args(
+            "tcp://127.0.0.1:1234",
+            Path::new("/workspace"),
+            "10.0.1.10:30501/app:abc123",
+            Some("10.0.1.10:30501/app:buildcache"),
+            Some("10.0.1.10:30501/app:buildcache"),
+            true,
+        );
+
+        let import_idx = args
+            .iter()
+            .position(|a| a == "--import-cache")
+            .expect("--import-cache present");
+        assert_eq!(
+            args[import_idx + 1],
+            "type=registry,ref=10.0.1.10:30501/app:buildcache,registry.insecure=true",
+        );
+
+        let export_idx = args
+            .iter()
+            .position(|a| a == "--export-cache")
+            .expect("--export-cache present");
+        assert_eq!(
+            args[export_idx + 1],
+            "type=registry,ref=10.0.1.10:30501/app:buildcache,mode=max,push=true,registry.insecure=true",
+        );
+
+        let output_idx = args
+            .iter()
+            .position(|a| a == "--output")
+            .expect("--output present");
+        assert_eq!(
+            args[output_idx + 1],
+            "type=image,name=10.0.1.10:30501/app:abc123,push=true,registry.insecure=true",
+        );
+    }
+
+    #[test]
+    fn cache_flags_without_insecure_have_no_suffix() {
+        let args = build_buildctl_args(
+            "tcp://127.0.0.1:1234",
+            Path::new("/workspace"),
+            "ghcr.io/owner/app:abc",
+            Some("ghcr.io/owner/app:buildcache"),
+            Some("ghcr.io/owner/app:buildcache"),
+            false,
+        );
+
+        let import_idx = args.iter().position(|a| a == "--import-cache").unwrap();
+        assert_eq!(
+            args[import_idx + 1],
+            "type=registry,ref=ghcr.io/owner/app:buildcache",
+        );
+
+        let output_idx = args.iter().position(|a| a == "--output").unwrap();
+        assert_eq!(
+            args[output_idx + 1],
+            "type=image,name=ghcr.io/owner/app:abc,push=true",
+        );
+    }
 }

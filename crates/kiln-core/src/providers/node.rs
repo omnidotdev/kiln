@@ -38,6 +38,42 @@ impl NodeProvider {
             .and_then(|parsed| parsed.get("scripts")?.get("build").cloned())
             .is_some()
     }
+
+    // Next.js `output: 'export'` makes `next build` emit a static site to out/,
+    // and `next start` then refuses to run ("does not work with output: export").
+    // Detect it so the runtime serves the exported files statically instead of
+    // running the app's (broken) `next start`.
+    fn is_next_static_export(ctx: &AppContext) -> bool {
+        const CONFIGS: [&str; 4] = ["next.config.js", "next.config.mjs", "next.config.ts", "next.config.cjs"];
+        CONFIGS.iter().any(|cfg| {
+            ctx.read_file(cfg).is_ok_and(|contents| {
+                let normalized: String = contents.chars().filter(|c| !c.is_whitespace()).collect();
+                normalized.contains("output:\"export\"") || normalized.contains("output:'export'")
+            })
+        })
+    }
+
+    // node_modules from the deps stage, plus the built app (which includes any
+    // generated output dir like Next's out/) from the build stage.
+    fn runtime_copy_from(has_build: bool) -> Vec<CopyFrom> {
+        let node_modules = CopyFrom {
+            stage: "deps".to_string(),
+            src: "/app/node_modules".to_string(),
+            dest: "/app/node_modules".to_string(),
+        };
+        if has_build {
+            vec![
+                node_modules,
+                CopyFrom {
+                    stage: "build".to_string(),
+                    src: "/app".to_string(),
+                    dest: "/app".to_string(),
+                },
+            ]
+        } else {
+            vec![node_modules]
+        }
+    }
 }
 
 impl Provider for NodeProvider {
@@ -52,7 +88,14 @@ impl Provider for NodeProvider {
     fn plan(&self, ctx: &AppContext) -> Result<BuildPlan> {
         let pm = Self::detect_package_manager(ctx);
         let has_build = Self::has_build_script(ctx);
-        let start_cmd = Self::detect_start_command(ctx, &pm);
+        // A Next.js static export builds to out/ and cannot be run with
+        // `next start`; serve the exported files statically instead.
+        let is_static_export = has_build && Self::is_next_static_export(ctx);
+        let start_cmd = if is_static_export {
+            Some("serve out -l 3000".to_string())
+        } else {
+            Self::detect_start_command(ctx, &pm)
+        };
 
         let base_image = "node:22-slim".to_string();
         let build_image = "node:22".to_string();
@@ -103,26 +146,7 @@ impl Provider for NodeProvider {
             });
         }
 
-        let runtime_copy_from = if has_build {
-            vec![
-                CopyFrom {
-                    stage: "deps".to_string(),
-                    src: "/app/node_modules".to_string(),
-                    dest: "/app/node_modules".to_string(),
-                },
-                CopyFrom {
-                    stage: "build".to_string(),
-                    src: "/app".to_string(),
-                    dest: "/app".to_string(),
-                },
-            ]
-        } else {
-            vec![CopyFrom {
-                stage: "deps".to_string(),
-                src: "/app/node_modules".to_string(),
-                dest: "/app/node_modules".to_string(),
-            }]
-        };
+        let runtime_copy_from = Self::runtime_copy_from(has_build);
 
         let mut runtime_copy_files = vec![];
         if !has_build {
@@ -132,13 +156,25 @@ impl Provider for NodeProvider {
             });
         }
 
+        // For a Next.js static export, install a static file server into the
+        // runtime image so `serve out` can host the exported site. npm ships
+        // with the node base image regardless of the app's package manager.
+        let runtime_commands = if is_static_export {
+            vec![Command {
+                run: "npm install -g serve@14".to_string(),
+                cache_mounts: vec![],
+            }]
+        } else {
+            vec![]
+        };
+
         stages.push(Stage {
             name: "runtime".to_string(),
             base_image,
             workdir: "/app".to_string(),
             copy_files: runtime_copy_files,
             copy_from: runtime_copy_from,
-            commands: vec![],
+            commands: runtime_commands,
         });
 
         Ok(BuildPlan {
@@ -281,5 +317,54 @@ mod tests {
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = NodeProvider.plan(&ctx).unwrap();
         assert_eq!(plan.start_command.as_deref(), Some("npm start"));
+    }
+
+    fn setup_next_export(dir: &std::path::Path, config: &str) {
+        let pkg =
+            r#"{"name":"web","scripts":{"build":"next build","start":"next start"},"dependencies":{"next":"13.5.1"}}"#;
+        std::fs::write(dir.join("package.json"), pkg).unwrap();
+        std::fs::write(dir.join("package-lock.json"), "{}").unwrap();
+        std::fs::write(dir.join("next.config.js"), config).unwrap();
+    }
+
+    #[test]
+    fn next_static_export_serves_out_instead_of_next_start() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_next_export(
+            dir.path(),
+            "const nextConfig = { output: 'export', images: { unoptimized: true } };\nmodule.exports = nextConfig;",
+        );
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+
+        // Serves the exported site, not the broken `next start`
+        assert_eq!(plan.start_command.as_deref(), Some("serve out -l 3000"));
+        // Static server is installed into the runtime stage
+        let runtime = plan.stages.last().unwrap();
+        assert_eq!(runtime.name, "runtime");
+        assert!(
+            runtime.commands.iter().any(|c| c.run.contains("serve")),
+            "runtime should install a static server"
+        );
+    }
+
+    #[test]
+    fn next_export_detected_with_double_quotes_and_whitespace() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_next_export(dir.path(), "module.exports = {\n  output:   \"export\",\n};");
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert_eq!(plan.start_command.as_deref(), Some("serve out -l 3000"));
+    }
+
+    #[test]
+    fn next_without_export_uses_next_start() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_next_export(dir.path(), "module.exports = { reactStrictMode: true };");
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert_eq!(plan.start_command.as_deref(), Some("npm start"));
+        let runtime = plan.stages.last().unwrap();
+        assert!(runtime.commands.is_empty());
     }
 }

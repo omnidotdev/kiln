@@ -58,7 +58,7 @@ enum Commands {
         #[arg(long)]
         cache_to: Option<String>,
         /// Treat the registry as insecure (HTTP / self-signed TLS).
-        /// Required for in-cluster Manifold (10.0.1.10:30501) and any
+        /// Required for a self-hosted registry (e.g. `localhost:5000`) or any
         /// other registry not behind a public-CA TLS endpoint.
         #[arg(long)]
         registry_insecure: bool,
@@ -294,9 +294,9 @@ mod tests {
         let args = build_buildctl_args(
             "tcp://127.0.0.1:1234",
             Path::new("/workspace"),
-            "10.0.1.10:30501/app:abc123",
-            Some("10.0.1.10:30501/app:buildcache"),
-            Some("10.0.1.10:30501/app:buildcache"),
+            "localhost:5000/app:abc123",
+            Some("localhost:5000/app:buildcache"),
+            Some("localhost:5000/app:buildcache"),
             true,
         );
 
@@ -306,7 +306,7 @@ mod tests {
             .expect("--import-cache present");
         assert_eq!(
             args[import_idx + 1],
-            "type=registry,ref=10.0.1.10:30501/app:buildcache,registry.insecure=true",
+            "type=registry,ref=localhost:5000/app:buildcache,registry.insecure=true",
         );
 
         let export_idx = args
@@ -315,7 +315,7 @@ mod tests {
             .expect("--export-cache present");
         assert_eq!(
             args[export_idx + 1],
-            "type=registry,ref=10.0.1.10:30501/app:buildcache,mode=max,push=true,registry.insecure=true",
+            "type=registry,ref=localhost:5000/app:buildcache,mode=max,push=true,registry.insecure=true",
         );
 
         let output_idx = args
@@ -324,7 +324,7 @@ mod tests {
             .expect("--output present");
         assert_eq!(
             args[output_idx + 1],
-            "type=image,name=10.0.1.10:30501/app:abc123,push=true,registry.insecure=true",
+            "type=image,name=localhost:5000/app:abc123,push=true,registry.insecure=true",
         );
     }
 

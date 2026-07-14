@@ -133,7 +133,11 @@ fn cmd_plan(path: &std::path::Path, emit: Option<&str>) -> std::result::Result<(
     Ok(())
 }
 
-#[allow(clippy::too_many_lines, clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+#[allow(
+    clippy::too_many_lines,
+    clippy::too_many_arguments,
+    clippy::fn_params_excessive_bools
+)]
 fn cmd_build(
     source: Option<&str>,
     git_ref: Option<&str>,
@@ -200,14 +204,7 @@ fn cmd_build(
 
     // Build with buildctl
     tracing::info!(dest, "building image");
-    let args = build_buildctl_args(
-        buildkit_addr,
-        &work_dir,
-        dest,
-        cache_from,
-        cache_to,
-        registry_insecure,
-    );
+    let args = build_buildctl_args(buildkit_addr, &work_dir, dest, cache_from, cache_to, registry_insecure);
     let status = std::process::Command::new("buildctl").args(&args).status()?;
 
     if !status.success() {
@@ -284,9 +281,10 @@ mod tests {
         );
         assert!(args.iter().all(|a| a != "--import-cache"));
         assert!(args.iter().all(|a| a != "--export-cache"));
-        assert!(args
-            .iter()
-            .any(|a| a == "type=image,name=registry.example/app:abc123,push=true"));
+        assert!(
+            args.iter()
+                .any(|a| a == "type=image,name=registry.example/app:abc123,push=true")
+        );
     }
 
     #[test]
@@ -318,10 +316,7 @@ mod tests {
             "type=registry,ref=localhost:5000/app:buildcache,mode=max,push=true,registry.insecure=true",
         );
 
-        let output_idx = args
-            .iter()
-            .position(|a| a == "--output")
-            .expect("--output present");
+        let output_idx = args.iter().position(|a| a == "--output").expect("--output present");
         assert_eq!(
             args[output_idx + 1],
             "type=image,name=localhost:5000/app:abc123,push=true,registry.insecure=true",
@@ -340,15 +335,9 @@ mod tests {
         );
 
         let import_idx = args.iter().position(|a| a == "--import-cache").unwrap();
-        assert_eq!(
-            args[import_idx + 1],
-            "type=registry,ref=ghcr.io/owner/app:buildcache",
-        );
+        assert_eq!(args[import_idx + 1], "type=registry,ref=ghcr.io/owner/app:buildcache",);
 
         let output_idx = args.iter().position(|a| a == "--output").unwrap();
-        assert_eq!(
-            args[output_idx + 1],
-            "type=image,name=ghcr.io/owner/app:abc,push=true",
-        );
+        assert_eq!(args[output_idx + 1], "type=image,name=ghcr.io/owner/app:abc,push=true",);
     }
 }

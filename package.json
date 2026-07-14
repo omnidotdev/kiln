@@ -1,0 +1,29 @@
+{
+  "name": "@omnidotdev/kiln",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zero-config source-to-image container builder",
+  "type": "module",
+  "packageManager": "bun@1.3.6",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/omnidotdev/kiln.git"
+  },
+  "license": "Apache-2.0",
+  "author": "Omni <team@omni.dev>",
+  "scripts": {
+    "check": "biome check --diagnostic-level=error scripts",
+    "lint": "biome lint --write scripts",
+    "format": "biome format --write scripts",
+    "version": "changeset version && bun scripts/syncVersion.ts",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.3.12",
+    "@changesets/changelog-github": "^0.5.2",
+    "@changesets/cli": "^2.29.8",
+    "@types/bun": "^1.3.6",
+    "husky": "^9.1.7"
+  },
+  "keywords": []
+}

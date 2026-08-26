@@ -118,7 +118,7 @@ impl Provider for NodeProvider {
             ],
             copy_from: vec![],
             commands: vec![Command {
-                run: install_cmd,
+                run: pm.with_setup(install_cmd),
                 cache_mounts: pm.cache_dirs(),
             }],
         };
@@ -140,7 +140,7 @@ impl Provider for NodeProvider {
                     dest: "/app/node_modules".to_string(),
                 }],
                 commands: vec![Command {
-                    run: format!("{} run build", pm.run_prefix()),
+                    run: pm.with_setup(format!("{} run build", pm.run_prefix())),
                     cache_mounts: vec![],
                 }],
             });
@@ -159,7 +159,7 @@ impl Provider for NodeProvider {
         // For a Next.js static export, install a static file server into the
         // runtime image so `serve out` can host the exported site. npm ships
         // with the node base image regardless of the app's package manager.
-        let runtime_commands = if is_static_export {
+        let mut runtime_commands = if is_static_export {
             vec![Command {
                 run: "npm install -g serve@14".to_string(),
                 cache_mounts: vec![],
@@ -167,6 +167,21 @@ impl Provider for NodeProvider {
         } else {
             vec![]
         };
+
+        // A `<pm> start` command needs the package manager present in the (slim)
+        // runtime image too. `node <main>` starts and static exports do not.
+        if !is_static_export {
+            if let (Some(setup), Some(cmd)) =
+                (pm.setup_command(), start_cmd.as_deref())
+            {
+                if cmd.starts_with(pm.run_prefix()) {
+                    runtime_commands.push(Command {
+                        run: setup.to_string(),
+                        cache_mounts: vec![],
+                    });
+                }
+            }
+        }
 
         stages.push(Stage {
             name: "runtime".to_string(),
@@ -200,6 +215,27 @@ impl PackageManager {
             Self::Yarn => "yarn install --frozen-lockfile".to_string(),
             Self::Pnpm => "pnpm install --frozen-lockfile".to_string(),
             Self::Bun => "bun install".to_string(),
+        }
+    }
+
+    /// Make this package manager available before it is invoked. npm ships with
+    /// the node base image; corepack (bundled with node) provisions pnpm/yarn,
+    /// honoring the package.json `packageManager` pin; bun is not corepack-
+    /// managed, so install it from npm. Without this, an auto-detected pnpm/yarn/
+    /// bun build fails with "<pm>: not found".
+    const fn setup_command(&self) -> Option<&'static str> {
+        match self {
+            Self::Npm => None,
+            Self::Yarn | Self::Pnpm => Some("corepack enable"),
+            Self::Bun => Some("npm install -g bun"),
+        }
+    }
+
+    /// Prefix `cmd` with the package-manager setup when one is needed.
+    fn with_setup(&self, cmd: String) -> String {
+        match self.setup_command() {
+            Some(setup) => format!("{setup} && {cmd}"),
+            None => cmd,
         }
     }
 
@@ -366,5 +402,43 @@ mod tests {
         assert_eq!(plan.start_command.as_deref(), Some("npm start"));
         let runtime = plan.stages.last().unwrap();
         assert!(runtime.commands.is_empty());
+    }
+
+    // Regression: pnpm/yarn/bun are not in the node base image, so an
+    // auto-detected build must provision them or it fails "<pm>: not found".
+    #[test]
+    fn pnpm_enables_corepack_across_stages() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_node_project(dir.path(), "pnpm");
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+
+        let deps = plan.stages.iter().find(|s| s.name == "deps").unwrap();
+        assert_eq!(
+            deps.commands[0].run,
+            "corepack enable && pnpm install --frozen-lockfile"
+        );
+        let build = plan.stages.iter().find(|s| s.name == "build").unwrap();
+        assert_eq!(build.commands[0].run, "corepack enable && pnpm run build");
+        // start is `pnpm start`, so the runtime image enables corepack too.
+        let runtime = plan.stages.iter().find(|s| s.name == "runtime").unwrap();
+        assert!(runtime.commands.iter().any(|c| c.run == "corepack enable"));
+    }
+
+    #[test]
+    fn bun_installs_itself_and_npm_needs_no_setup() {
+        let bun_dir = tempfile::tempdir().unwrap();
+        setup_node_project(bun_dir.path(), "bun");
+        let bun_ctx = AppContext::new(bun_dir.path()).unwrap();
+        let bun_plan = NodeProvider.plan(&bun_ctx).unwrap();
+        let bun_deps = bun_plan.stages.iter().find(|s| s.name == "deps").unwrap();
+        assert_eq!(bun_deps.commands[0].run, "npm install -g bun && bun install");
+
+        let npm_dir = tempfile::tempdir().unwrap();
+        setup_node_project(npm_dir.path(), "npm");
+        let npm_ctx = AppContext::new(npm_dir.path()).unwrap();
+        let npm_plan = NodeProvider.plan(&npm_ctx).unwrap();
+        let npm_deps = npm_plan.stages.iter().find(|s| s.name == "deps").unwrap();
+        assert_eq!(npm_deps.commands[0].run, "npm ci");
     }
 }

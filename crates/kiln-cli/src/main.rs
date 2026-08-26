@@ -10,6 +10,11 @@ struct Cli {
     command: Commands,
 }
 
+// The `Build` variant carries the full build/registry/override flag set, so it
+// is unavoidably larger than the other variants; boxing clap-derived fields
+// would break the derive ergonomics for no runtime benefit (one short-lived
+// value parsed once at startup).
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Commands {
     /// Detect the project language

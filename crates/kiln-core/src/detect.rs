@@ -108,10 +108,7 @@ pub fn detect_and_plan(root: impl AsRef<Path>) -> Result<BuildPlan> {
 /// # Errors
 ///
 /// Returns `NoProviderDetected` if no provider matches.
-pub fn detect_and_plan_with(
-    root: impl AsRef<Path>,
-    overrides: BuildOverrides,
-) -> Result<BuildPlan> {
+pub fn detect_and_plan_with(root: impl AsRef<Path>, overrides: BuildOverrides) -> Result<BuildPlan> {
     let ctx = AppContext::with_overrides(root.as_ref(), overrides)?;
 
     for provider in providers::all() {

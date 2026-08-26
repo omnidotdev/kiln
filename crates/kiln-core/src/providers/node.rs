@@ -74,6 +74,58 @@ impl NodeProvider {
             vec![node_modules]
         }
     }
+
+    /// Assemble the runtime stage: copy sources/artifacts and provision any
+    /// package manager or static file server the start command needs.
+    fn runtime_stage(
+        pm: &PackageManager,
+        has_build: bool,
+        is_static_export: bool,
+        start_cmd: Option<&str>,
+        base_image: String,
+    ) -> Stage {
+        let mut copy_files = vec![];
+        if !has_build {
+            copy_files.push(CopyDirective {
+                src: ".".to_string(),
+                dest: ".".to_string(),
+            });
+        }
+
+        // For a Next.js static export, install a static file server into the
+        // runtime image so `serve out` can host the exported site. npm ships
+        // with the node base image regardless of the app's package manager.
+        let mut commands = if is_static_export {
+            vec![Command {
+                run: "npm install -g serve@14".to_string(),
+                cache_mounts: vec![],
+            }]
+        } else {
+            vec![]
+        };
+
+        // A `<pm> start` command needs the package manager present in the (slim)
+        // runtime image too. `node <main>` starts and static exports do not.
+        if !is_static_export {
+            if let (Some(setup), Some(cmd)) = (pm.setup_command(), start_cmd) {
+                if cmd.starts_with(pm.run_prefix()) {
+                    commands.push(Command {
+                        run: setup.to_string(),
+                        cache_mounts: vec![],
+                    });
+                }
+            }
+        }
+
+        Stage {
+            name: "runtime".to_string(),
+            base_image,
+            workdir: "/app".to_string(),
+            copy_files,
+            copy_from: Self::runtime_copy_from(has_build),
+            commands,
+        }
+    }
 }
 
 impl Provider for NodeProvider {
@@ -97,8 +149,7 @@ impl Provider for NodeProvider {
             .unwrap_or_else(|| Self::detect_package_manager(ctx));
         // An explicit build-command override forces a build stage even when the
         // package.json has no `build` script.
-        let has_build =
-            ctx.overrides.build_command.is_some() || Self::has_build_script(ctx);
+        let has_build = ctx.overrides.build_command.is_some() || Self::has_build_script(ctx);
         // A Next.js static export builds to out/ and cannot be run with
         // `next start`; serve the exported files statically instead.
         let is_static_export = has_build && Self::is_next_static_export(ctx);
@@ -168,51 +219,13 @@ impl Provider for NodeProvider {
             });
         }
 
-        let runtime_copy_from = Self::runtime_copy_from(has_build);
-
-        let mut runtime_copy_files = vec![];
-        if !has_build {
-            runtime_copy_files.push(CopyDirective {
-                src: ".".to_string(),
-                dest: ".".to_string(),
-            });
-        }
-
-        // For a Next.js static export, install a static file server into the
-        // runtime image so `serve out` can host the exported site. npm ships
-        // with the node base image regardless of the app's package manager.
-        let mut runtime_commands = if is_static_export {
-            vec![Command {
-                run: "npm install -g serve@14".to_string(),
-                cache_mounts: vec![],
-            }]
-        } else {
-            vec![]
-        };
-
-        // A `<pm> start` command needs the package manager present in the (slim)
-        // runtime image too. `node <main>` starts and static exports do not.
-        if !is_static_export {
-            if let (Some(setup), Some(cmd)) =
-                (pm.setup_command(), start_cmd.as_deref())
-            {
-                if cmd.starts_with(pm.run_prefix()) {
-                    runtime_commands.push(Command {
-                        run: setup.to_string(),
-                        cache_mounts: vec![],
-                    });
-                }
-            }
-        }
-
-        stages.push(Stage {
-            name: "runtime".to_string(),
+        stages.push(Self::runtime_stage(
+            &pm,
+            has_build,
+            is_static_export,
+            start_cmd.as_deref(),
             base_image,
-            workdir: "/app".to_string(),
-            copy_files: runtime_copy_files,
-            copy_from: runtime_copy_from,
-            commands: runtime_commands,
-        });
+        ));
 
         Ok(BuildPlan {
             provider: "node".to_string(),

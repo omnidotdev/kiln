@@ -4,11 +4,29 @@ use crate::error::{Error, Result};
 use crate::plan::BuildPlan;
 use crate::providers;
 
+/// User-supplied overrides that take precedence over a provider's auto-detected
+/// build steps, for setups auto-detect cannot handle (all optional; `None`
+/// leaves the detected value in place).
+#[derive(Debug, Default, Clone)]
+pub struct BuildOverrides {
+    /// Force a package manager (e.g. "npm"|"pnpm"|"yarn"|"bun") instead of
+    /// lockfile sniffing.
+    pub package_manager: Option<String>,
+    /// Replace the dependency-install command.
+    pub install_command: Option<String>,
+    /// Replace the build command (also forces a build stage when set).
+    pub build_command: Option<String>,
+    /// Replace the runtime start command.
+    pub start_command: Option<String>,
+}
+
 /// Context for a project being analyzed.
 #[derive(Debug)]
 pub struct AppContext {
     /// Root path of the project
     pub root: PathBuf,
+    /// User-supplied build-step overrides (empty by default).
+    pub overrides: BuildOverrides,
 }
 
 impl AppContext {
@@ -18,6 +36,15 @@ impl AppContext {
     ///
     /// Returns an error if the path does not exist.
     pub fn new(root: impl Into<PathBuf>) -> Result<Self> {
+        Self::with_overrides(root, BuildOverrides::default())
+    }
+
+    /// Create a context with build-step overrides.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the path does not exist.
+    pub fn with_overrides(root: impl Into<PathBuf>, overrides: BuildOverrides) -> Result<Self> {
         let root = root.into();
         if !root.exists() {
             return Err(Error::ReadFile {
@@ -25,7 +52,7 @@ impl AppContext {
                 source: std::io::Error::new(std::io::ErrorKind::NotFound, "path does not exist"),
             });
         }
-        Ok(Self { root })
+        Ok(Self { root, overrides })
     }
 
     /// Check if a file exists relative to the project root.
@@ -72,7 +99,20 @@ impl AppContext {
 ///
 /// Returns `NoProviderDetected` if no provider matches.
 pub fn detect_and_plan(root: impl AsRef<Path>) -> Result<BuildPlan> {
-    let ctx = AppContext::new(root.as_ref())?;
+    detect_and_plan_with(root, BuildOverrides::default())
+}
+
+/// Detect the project language and generate a build plan, applying
+/// user-supplied build-step overrides.
+///
+/// # Errors
+///
+/// Returns `NoProviderDetected` if no provider matches.
+pub fn detect_and_plan_with(
+    root: impl AsRef<Path>,
+    overrides: BuildOverrides,
+) -> Result<BuildPlan> {
+    let ctx = AppContext::with_overrides(root.as_ref(), overrides)?;
 
     for provider in providers::all() {
         if provider.detect(&ctx) {

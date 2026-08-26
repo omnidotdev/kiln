@@ -86,21 +86,38 @@ impl Provider for NodeProvider {
     }
 
     fn plan(&self, ctx: &AppContext) -> Result<BuildPlan> {
-        let pm = Self::detect_package_manager(ctx);
-        let has_build = Self::has_build_script(ctx);
+        // A `packageManager` override skips lockfile sniffing; it must flow into
+        // the enum (not just the command strings) so the corepack/bun setup and
+        // lock-file copy match.
+        let pm = ctx
+            .overrides
+            .package_manager
+            .as_deref()
+            .and_then(PackageManager::parse)
+            .unwrap_or_else(|| Self::detect_package_manager(ctx));
+        // An explicit build-command override forces a build stage even when the
+        // package.json has no `build` script.
+        let has_build =
+            ctx.overrides.build_command.is_some() || Self::has_build_script(ctx);
         // A Next.js static export builds to out/ and cannot be run with
         // `next start`; serve the exported files statically instead.
         let is_static_export = has_build && Self::is_next_static_export(ctx);
-        let start_cmd = if is_static_export {
-            Some("serve out -l 3000".to_string())
-        } else {
-            Self::detect_start_command(ctx, &pm)
-        };
+        let start_cmd = ctx.overrides.start_command.clone().or_else(|| {
+            if is_static_export {
+                Some("serve out -l 3000".to_string())
+            } else {
+                Self::detect_start_command(ctx, &pm)
+            }
+        });
 
         let base_image = "node:22-slim".to_string();
         let build_image = "node:22".to_string();
 
-        let install_cmd = pm.install_command();
+        let install_cmd = ctx
+            .overrides
+            .install_command
+            .clone()
+            .unwrap_or_else(|| pm.install_command());
         let lock_files = pm.lock_files().join(" ");
         let deps_stage = Stage {
             name: "deps".to_string(),
@@ -140,7 +157,12 @@ impl Provider for NodeProvider {
                     dest: "/app/node_modules".to_string(),
                 }],
                 commands: vec![Command {
-                    run: pm.with_setup(format!("{} run build", pm.run_prefix())),
+                    run: pm.with_setup(
+                        ctx.overrides
+                            .build_command
+                            .clone()
+                            .unwrap_or_else(|| format!("{} run build", pm.run_prefix())),
+                    ),
                     cache_mounts: vec![],
                 }],
             });
@@ -209,6 +231,18 @@ enum PackageManager {
 }
 
 impl PackageManager {
+    /// Parse a user-supplied package-manager override; unknown values fall back
+    /// to lockfile detection.
+    fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "npm" => Some(Self::Npm),
+            "yarn" => Some(Self::Yarn),
+            "pnpm" => Some(Self::Pnpm),
+            "bun" => Some(Self::Bun),
+            _ => None,
+        }
+    }
+
     fn install_command(&self) -> String {
         match self {
             Self::Npm => "npm ci".to_string(),
@@ -440,5 +474,35 @@ mod tests {
         let npm_plan = NodeProvider.plan(&npm_ctx).unwrap();
         let npm_deps = npm_plan.stages.iter().find(|s| s.name == "deps").unwrap();
         assert_eq!(npm_deps.commands[0].run, "npm ci");
+    }
+
+    // Overrides win over lockfile/script detection (for setups auto-detect can't
+    // handle). The package_manager override still flows into the corepack/bun
+    // setup so the overridden install/build commands actually find the binary.
+    #[test]
+    fn overrides_take_precedence_over_detection() {
+        let dir = tempfile::tempdir().unwrap();
+        // npm lockfile on disk, but everything is overridden to pnpm + custom.
+        setup_node_project(dir.path(), "npm");
+        let ctx = AppContext::with_overrides(
+            dir.path(),
+            crate::BuildOverrides {
+                package_manager: Some("pnpm".to_string()),
+                install_command: Some("pnpm install --prod".to_string()),
+                build_command: Some("pnpm turbo build".to_string()),
+                start_command: Some("node dist/main.js".to_string()),
+            },
+        )
+        .unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+
+        let deps = plan.stages.iter().find(|s| s.name == "deps").unwrap();
+        assert_eq!(deps.commands[0].run, "corepack enable && pnpm install --prod");
+        let build = plan.stages.iter().find(|s| s.name == "build").unwrap();
+        assert_eq!(build.commands[0].run, "corepack enable && pnpm turbo build");
+        assert_eq!(plan.start_command.as_deref(), Some("node dist/main.js"));
+        // start is `node ...`, not `<pm> ...`, so the runtime needs no pm setup.
+        let runtime = plan.stages.iter().find(|s| s.name == "runtime").unwrap();
+        assert!(runtime.commands.is_empty());
     }
 }

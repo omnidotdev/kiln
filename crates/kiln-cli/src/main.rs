@@ -62,6 +62,18 @@ enum Commands {
         /// other registry not behind a public-CA TLS endpoint.
         #[arg(long)]
         registry_insecure: bool,
+        /// Override the auto-detected package manager (npm|pnpm|yarn|bun).
+        #[arg(long)]
+        package_manager: Option<String>,
+        /// Override the dependency-install command.
+        #[arg(long)]
+        install_cmd: Option<String>,
+        /// Override the build command (also forces a build step when set).
+        #[arg(long)]
+        build_cmd: Option<String>,
+        /// Override the runtime start command.
+        #[arg(long)]
+        start_cmd: Option<String>,
     },
 }
 
@@ -88,6 +100,10 @@ fn main() {
             cache_from,
             cache_to,
             registry_insecure,
+            package_manager,
+            install_cmd,
+            build_cmd,
+            start_cmd,
         } => cmd_build(
             source.as_deref(),
             git_ref.as_deref(),
@@ -98,6 +114,12 @@ fn main() {
             cache_from.as_deref(),
             cache_to.as_deref(),
             registry_insecure,
+            kiln_core::BuildOverrides {
+                package_manager,
+                install_command: install_cmd,
+                build_command: build_cmd,
+                start_command: start_cmd,
+            },
         ),
     };
 
@@ -148,6 +170,7 @@ fn cmd_build(
     cache_from: Option<&str>,
     cache_to: Option<&str>,
     registry_insecure: bool,
+    overrides: kiln_core::BuildOverrides,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Clone source repo if provided
     let work_dir = if let Some(url) = source {
@@ -193,7 +216,7 @@ fn cmd_build(
     let dockerfile_content = if let Some(df) = dockerfile {
         std::fs::read_to_string(df)?
     } else {
-        let plan = kiln_core::detect_and_plan(&work_dir)?;
+        let plan = kiln_core::detect_and_plan_with(&work_dir, overrides)?;
         tracing::info!(provider = plan.provider, "detected language, generating Dockerfile");
         kiln_core::dockerfile::generate(&plan)
     };

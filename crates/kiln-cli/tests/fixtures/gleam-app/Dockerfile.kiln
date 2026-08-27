@@ -1,0 +1,13 @@
+# syntax=docker/dockerfile:1
+
+FROM ghcr.io/gleam-lang/gleam:v1.12.0-erlang AS build
+WORKDIR /app
+COPY . .
+RUN --mount=type=cache,target=/root/.cache/gleam gleam export erlang-shipment
+
+FROM erlang:27-slim AS runtime
+WORKDIR /app
+COPY --from=build /app/build/erlang-shipment /app
+
+EXPOSE 8080
+CMD ["/app/entrypoint.sh", "run"]

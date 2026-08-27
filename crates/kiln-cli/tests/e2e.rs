@@ -21,6 +21,9 @@ struct Fixture {
     dir: &'static str,
     /// Port the app listens on inside the container.
     port: u16,
+    /// When true, HTTP-probe the port. When false (a non-server app), just
+    /// verify the container builds and stays running (did not crash on boot).
+    http: bool,
 }
 
 const FIXTURES: &[Fixture] = &[
@@ -28,46 +31,62 @@ const FIXTURES: &[Fixture] = &[
     Fixture {
         dir: "go-nodeps",
         port: 8080,
+        http: true,
     },
     // lockfile-less, zero-dependency Node: npm install fallback + node_modules guard
     Fixture {
         dir: "node-nolock",
         port: 3000,
+        http: true,
     },
     // plain PHP (no composer.lock): apache serves on port 80
     Fixture {
         dir: "php-plain",
         port: 80,
+        http: true,
     },
     // Rust binary: copied out of the /app/target cache mount, exec-form CMD
     Fixture {
         dir: "rust-bin",
         port: 8080,
+        http: true,
     },
     // C++/CMake: cmake provisioned on gcc:14, binary launched via ./app, slim runtime
     Fixture {
         dir: "cpp-cmake",
         port: 8080,
+        http: true,
     },
     // Ruby/Sinatra: gems must land in the image layer (not a cache mount)
     Fixture {
         dir: "ruby-sinatra",
         port: 3000,
+        http: true,
     },
     // Python/Flask: pip install, site-packages copied into slim, gunicorn start
     Fixture {
         dir: "python-flask",
         port: 8000,
+        http: true,
     },
     // Java/Spring Boot Gradle: select the executable jar, not the -plain jar
     Fixture {
         dir: "java-spring",
         port: 8080,
+        http: true,
     },
     // Elixir OTP release: launch bin/<app>, matching-GLIBC runtime, libssl
     Fixture {
         dir: "elixir-release",
         port: 4000,
+        http: true,
+    },
+    // Gleam erlang-shipment: must launch via entrypoint.sh (no `gleam` binary
+    // in the runtime); verifies the app boots rather than crashing
+    Fixture {
+        dir: "gleam-app",
+        port: 0,
+        http: false,
     },
 ];
 
@@ -129,7 +148,11 @@ fn verify(fx: &Fixture) -> Result<(), String> {
     }
     let cid = out.trim().to_string();
 
-    let mut result = probe(&cid, fx.port);
+    let mut result = if fx.http {
+        probe(&cid, fx.port)
+    } else {
+        still_running(&cid)
+    };
     // On any failure, attach the container logs (a crashed container has no
     // published port, so the probe never even reaches the HTTP check).
     if let Err(e) = &result {
@@ -140,6 +163,21 @@ fn verify(fx: &Fixture) -> Result<(), String> {
     // 4. always clean up the container
     let _ = run(Command::new("docker").args(["rm", "-f", &cid]));
     result
+}
+
+/// For a non-server app: give it a moment to boot, then confirm it did not
+/// crash (the container is still running).
+fn still_running(cid: &str) -> Result<(), String> {
+    std::thread::sleep(Duration::from_secs(4));
+    let (ok, out, err) = run(Command::new("docker").args(["inspect", "-f", "{{.State.Running}}", cid]));
+    if !ok {
+        return Err(format!("docker inspect failed: {out}{err}"));
+    }
+    if out.trim() == "true" {
+        Ok(())
+    } else {
+        Err("container exited (did not stay running)".to_string())
+    }
 }
 
 fn probe(cid: &str, port: u16) -> Result<(), String> {

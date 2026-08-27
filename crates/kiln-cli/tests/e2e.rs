@@ -50,11 +50,16 @@ fn fixtures_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
-fn run(cmd: &mut Command) -> (bool, String) {
+/// Run a command, returning (success, stdout, stderr). The streams are kept
+/// separate: kiln writes the Dockerfile to stdout and logs to stderr, so the
+/// two must not be merged when capturing output as data.
+fn run(cmd: &mut Command) -> (bool, String, String) {
     let out = cmd.output().expect("spawn");
-    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
-    s.push_str(&String::from_utf8_lossy(&out.stderr));
-    (out.status.success(), s)
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
 }
 
 /// Build the image, run it, and probe `/` until it returns a response or the
@@ -64,18 +69,19 @@ fn verify(fx: &Fixture) -> Result<(), String> {
     let tag = format!("kiln-e2e-{}", fx.dir);
     let dockerfile = dir.join("Dockerfile.kiln");
 
-    // 1. generate the Dockerfile via the real kiln binary
-    let (ok, out) = run(Command::new(env!("CARGO_BIN_EXE_kiln"))
+    // 1. generate the Dockerfile via the real kiln binary (stdout only; logs
+    //    go to stderr and must not land in the Dockerfile)
+    let (ok, stdout, stderr) = run(Command::new(env!("CARGO_BIN_EXE_kiln"))
         .args(["plan", "--path"])
         .arg(&dir)
         .args(["--emit", "dockerfile"]));
     if !ok {
-        return Err(format!("kiln plan failed: {out}"));
+        return Err(format!("kiln plan failed: {stderr}"));
     }
-    std::fs::write(&dockerfile, out.as_bytes()).map_err(|e| e.to_string())?;
+    std::fs::write(&dockerfile, stdout.as_bytes()).map_err(|e| e.to_string())?;
 
     // 2. build it
-    let (ok, out) = run(Command::new("docker").args([
+    let (ok, out, err) = run(Command::new("docker").args([
         "buildx",
         "build",
         "--load",
@@ -87,13 +93,14 @@ fn verify(fx: &Fixture) -> Result<(), String> {
     ]));
     let _ = std::fs::remove_file(&dockerfile);
     if !ok {
-        return Err(format!("docker build failed:\n{out}"));
+        return Err(format!("docker build failed:\n{out}{err}"));
     }
 
     // 3. run it, mapping the container port to a random host port
-    let (ok, out) = run(Command::new("docker").args(["run", "-d", "-P", "-e", &format!("PORT={}", fx.port), &tag]));
+    let (ok, out, err) =
+        run(Command::new("docker").args(["run", "-d", "-P", "-e", &format!("PORT={}", fx.port), &tag]));
     if !ok {
-        return Err(format!("docker run failed: {out}"));
+        return Err(format!("docker run failed: {out}{err}"));
     }
     let cid = out.trim().to_string();
 
@@ -106,9 +113,9 @@ fn verify(fx: &Fixture) -> Result<(), String> {
 
 fn probe(cid: &str, port: u16) -> Result<(), String> {
     // resolve the mapped host port
-    let (ok, out) = run(Command::new("docker").args(["port", cid, &format!("{port}/tcp")]));
+    let (ok, out, err) = run(Command::new("docker").args(["port", cid, &format!("{port}/tcp")]));
     if !ok {
-        return Err(format!("docker port failed: {out}"));
+        return Err(format!("docker port failed: {out}{err}"));
     }
     let host_port = out
         .lines()
@@ -122,14 +129,15 @@ fn probe(cid: &str, port: u16) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut last = String::new();
     while Instant::now() < deadline {
-        let (ok, out) = run(Command::new("curl").args(["-fsS", "--max-time", "3", &url]));
+        let (ok, _out, err) = run(Command::new("curl").args(["-fsS", "--max-time", "3", &url]));
         if ok {
             return Ok(());
         }
-        last = out;
+        last = err;
         std::thread::sleep(Duration::from_millis(1000));
     }
-    let (_, logs) = run(Command::new("docker").args(["logs", "--tail", "20", cid]));
+    let (_, logs, logs_err) = run(Command::new("docker").args(["logs", "--tail", "20", cid]));
+    let logs = format!("{logs}{logs_err}");
     Err(format!(
         "probe {url} never succeeded: {last}\n--- container logs ---\n{logs}"
     ))

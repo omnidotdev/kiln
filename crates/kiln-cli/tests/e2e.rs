@@ -22,7 +22,8 @@ struct Fixture {
     /// Port the app listens on inside the container.
     port: u16,
     /// When true, HTTP-probe the port. When false (a non-server app), just
-    /// verify the container builds and stays running (did not crash on boot).
+    /// verify the container builds and runs without crashing (still running or
+    /// exited 0).
     http: bool,
 }
 
@@ -151,7 +152,7 @@ fn verify(fx: &Fixture) -> Result<(), String> {
     let mut result = if fx.http {
         probe(&cid, fx.port)
     } else {
-        still_running(&cid)
+        ran_without_crashing(&cid)
     };
     // On any failure, attach the container logs (a crashed container has no
     // published port, so the probe never even reaches the HTTP check).
@@ -166,17 +167,17 @@ fn verify(fx: &Fixture) -> Result<(), String> {
 }
 
 /// For a non-server app: give it a moment to boot, then confirm it did not
-/// crash (the container is still running).
-fn still_running(cid: &str) -> Result<(), String> {
+/// crash -- it is either still running or has exited cleanly (code 0).
+fn ran_without_crashing(cid: &str) -> Result<(), String> {
     std::thread::sleep(Duration::from_secs(4));
-    let (ok, out, err) = run(Command::new("docker").args(["inspect", "-f", "{{.State.Running}}", cid]));
+    let (ok, out, err) =
+        run(Command::new("docker").args(["inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}", cid]));
     if !ok {
         return Err(format!("docker inspect failed: {out}{err}"));
     }
-    if out.trim() == "true" {
-        Ok(())
-    } else {
-        Err("container exited (did not stay running)".to_string())
+    match out.trim() {
+        "true 0" | "false 0" => Ok(()),
+        other => Err(format!("container did not run cleanly (running exitcode = {other})")),
     }
 }
 

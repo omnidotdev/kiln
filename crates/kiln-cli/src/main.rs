@@ -84,6 +84,9 @@ enum Commands {
 
 fn main() {
     tracing_subscriber::fmt()
+        // Logs go to stderr so stdout carries only data (e.g. `kiln plan --emit
+        // dockerfile` must produce a clean Dockerfile that can be redirected).
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),

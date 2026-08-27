@@ -11,7 +11,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install buildctl (BuildKit client)
-COPY --from=moby/buildkit:v0.21.1 /usr/bin/buildctl /usr/local/bin/buildctl
+COPY --from=moby/buildkit:v0.32.2 /usr/bin/buildctl /usr/local/bin/buildctl
 
 COPY --from=build /app/target/release/kiln /usr/local/bin/kiln
 

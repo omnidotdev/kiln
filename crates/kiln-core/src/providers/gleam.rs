@@ -34,7 +34,7 @@ impl Provider for GleamProvider {
 
         let runtime_stage = Stage {
             name: "runtime".to_string(),
-            base_image: "erlang:27-slim".to_string(),
+            base_image: "erlang:28-slim".to_string(),
             workdir: "/app".to_string(),
             copy_files: vec![],
             copy_from: vec![CopyFrom {
@@ -45,7 +45,7 @@ impl Provider for GleamProvider {
             commands: vec![],
         };
 
-        // `gleam` (the build tool) is not in erlang:27-slim; the erlang-shipment
+        // `gleam` (the build tool) is not in erlang:28-slim; the erlang-shipment
         // ships a self-contained entrypoint.sh that boots via `erl` (which is
         // present). It is copied into /app, so launch /app/entrypoint.sh run.
         Ok(BuildPlan {
@@ -79,8 +79,8 @@ mod tests {
         assert_eq!(plan.stages.len(), 2);
         assert_eq!(plan.stages[0].name, "build");
         assert_eq!(plan.stages[1].name, "runtime");
-        assert_eq!(plan.stages[1].base_image, "erlang:27-slim");
-        // erlang:27-slim has no `gleam`; the shipment's entrypoint.sh boots it.
+        assert_eq!(plan.stages[1].base_image, "erlang:28-slim");
+        // erlang:28-slim has no `gleam`; the shipment's entrypoint.sh boots it.
         assert_eq!(plan.start_command.as_deref(), Some("/app/entrypoint.sh run"));
         assert_eq!(plan.port, Some(8080));
     }

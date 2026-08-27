@@ -19,7 +19,7 @@ impl Provider for GleamProvider {
             name: "build".to_string(),
             // Image tags use the full patch version; `v1.7-erlang` does not
             // exist and failed with "not found".
-            base_image: "ghcr.io/gleam-lang/gleam:v1.12.0-erlang".to_string(),
+            base_image: "ghcr.io/gleam-lang/gleam:v1.15.0-erlang".to_string(),
             workdir: "/app".to_string(),
             copy_files: vec![CopyDirective {
                 src: ".".to_string(),

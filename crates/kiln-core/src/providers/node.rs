@@ -186,8 +186,11 @@ impl Provider for NodeProvider {
                 dest: ".".to_string(),
             }],
             copy_from: vec![],
+            // Ensure node_modules exists even for a zero-dependency project (some
+            // package managers create nothing), or the later
+            // `COPY --from=deps /app/node_modules` fails with "not found".
             commands: vec![Command {
-                run: pm.with_setup(install_cmd),
+                run: format!("{} && mkdir -p node_modules", pm.with_setup(install_cmd)),
                 cache_mounts: pm.cache_dirs(),
             }],
         };
@@ -488,7 +491,7 @@ mod tests {
         let deps = plan.stages.iter().find(|s| s.name == "deps").unwrap();
         assert_eq!(
             deps.commands[0].run,
-            "corepack enable && pnpm install --frozen-lockfile"
+            "corepack enable && pnpm install --frozen-lockfile && mkdir -p node_modules"
         );
         let build = plan.stages.iter().find(|s| s.name == "build").unwrap();
         assert_eq!(build.commands[0].run, "corepack enable && pnpm run build");
@@ -504,14 +507,17 @@ mod tests {
         let bun_ctx = AppContext::new(bun_dir.path()).unwrap();
         let bun_plan = NodeProvider.plan(&bun_ctx).unwrap();
         let bun_deps = bun_plan.stages.iter().find(|s| s.name == "deps").unwrap();
-        assert_eq!(bun_deps.commands[0].run, "npm install -g bun && bun install");
+        assert_eq!(
+            bun_deps.commands[0].run,
+            "npm install -g bun && bun install && mkdir -p node_modules"
+        );
 
         let npm_dir = tempfile::tempdir().unwrap();
         setup_node_project(npm_dir.path(), "npm");
         let npm_ctx = AppContext::new(npm_dir.path()).unwrap();
         let npm_plan = NodeProvider.plan(&npm_ctx).unwrap();
         let npm_deps = npm_plan.stages.iter().find(|s| s.name == "deps").unwrap();
-        assert_eq!(npm_deps.commands[0].run, "npm ci");
+        assert_eq!(npm_deps.commands[0].run, "npm ci && mkdir -p node_modules");
     }
 
     #[test]
@@ -524,7 +530,7 @@ mod tests {
         let deps = plan.stages.iter().find(|s| s.name == "deps").unwrap();
         assert_eq!(
             deps.commands[0].run,
-            "corepack enable && yarn install --frozen-lockfile"
+            "corepack enable && yarn install --frozen-lockfile && mkdir -p node_modules"
         );
         let build = plan.stages.iter().find(|s| s.name == "build").unwrap();
         assert_eq!(build.commands[0].run, "corepack enable && yarn run build");
@@ -547,7 +553,7 @@ mod tests {
         let plan = NodeProvider.plan(&ctx).unwrap();
 
         let deps = plan.stages.iter().find(|s| s.name == "deps").unwrap();
-        assert_eq!(deps.commands[0].run, "npm install");
+        assert_eq!(deps.commands[0].run, "npm install && mkdir -p node_modules");
         // the lockfile is copied as an optional glob paired with package.json,
         // so an absent lockfile never fails the COPY.
         assert_eq!(deps.copy_files.len(), 1);
@@ -573,7 +579,10 @@ mod tests {
         let plan = NodeProvider.plan(&ctx).unwrap();
 
         let deps = plan.stages.iter().find(|s| s.name == "deps").unwrap();
-        assert_eq!(deps.commands[0].run, "corepack enable && pnpm install");
+        assert_eq!(
+            deps.commands[0].run,
+            "corepack enable && pnpm install && mkdir -p node_modules"
+        );
         assert_eq!(deps.copy_files[0].src, "package.json pnpm-lock.yaml*");
     }
 
@@ -598,7 +607,10 @@ mod tests {
         let plan = NodeProvider.plan(&ctx).unwrap();
 
         let deps = plan.stages.iter().find(|s| s.name == "deps").unwrap();
-        assert_eq!(deps.commands[0].run, "corepack enable && pnpm install --prod");
+        assert_eq!(
+            deps.commands[0].run,
+            "corepack enable && pnpm install --prod && mkdir -p node_modules"
+        );
         let build = plan.stages.iter().find(|s| s.name == "build").unwrap();
         assert_eq!(build.commands[0].run, "corepack enable && pnpm turbo build");
         assert_eq!(plan.start_command.as_deref(), Some("node dist/main.js"));

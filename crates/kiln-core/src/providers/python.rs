@@ -51,11 +51,13 @@ impl PythonProvider {
         None
     }
 
+    // The framework start commands embed the shell `${PORT:-8000}` default
+    // expansion, which clippy misreads as a stray format placeholder inside the
+    // format! strings; it is a literal shell fragment, not a Rust arg.
+    #[allow(clippy::literal_string_with_formatting_args)]
     fn start_command(framework: Option<&PythonFramework>, entry: Option<&str>) -> Option<String> {
         match framework {
-            Some(PythonFramework::Django) =>
-            {
-                #[allow(clippy::literal_string_with_formatting_args)]
+            Some(PythonFramework::Django) => {
                 Some("gunicorn --bind 0.0.0.0:${PORT:-8000} config.wsgi:application".to_string())
             }
             Some(PythonFramework::FastApi) => {

@@ -164,26 +164,27 @@ impl Provider for NodeProvider {
         let base_image = "node:22-slim".to_string();
         let build_image = "node:22".to_string();
 
+        // `npm ci` / `--frozen-lockfile` hard-fail without a committed lockfile
+        // (e.g. a repo that never committed one, so detection fell back to npm,
+        // or a package_manager override whose lockfile is not present). Drop the
+        // frozen flag in that case so the build still succeeds.
+        let has_lock = pm.has_lockfile(ctx);
         let install_cmd = ctx
             .overrides
             .install_command
             .clone()
-            .unwrap_or_else(|| pm.install_command());
-        let lock_files = pm.lock_files().join(" ");
+            .unwrap_or_else(|| pm.install_command(has_lock));
+        // Copy package.json and the lockfile in one directive: the lockfile is a
+        // glob (`*`) so a missing lockfile does not fail the COPY, while
+        // package.json guarantees at least one source matches.
         let deps_stage = Stage {
             name: "deps".to_string(),
             base_image: build_image.clone(),
             workdir: "/app".to_string(),
-            copy_files: vec![
-                CopyDirective {
-                    src: "package.json".to_string(),
-                    dest: ".".to_string(),
-                },
-                CopyDirective {
-                    src: lock_files,
-                    dest: ".".to_string(),
-                },
-            ],
+            copy_files: vec![CopyDirective {
+                src: format!("package.json {}", pm.lock_glob()),
+                dest: ".".to_string(),
+            }],
             copy_from: vec![],
             commands: vec![Command {
                 run: pm.with_setup(install_cmd),
@@ -256,12 +257,18 @@ impl PackageManager {
         }
     }
 
-    fn install_command(&self) -> String {
-        match self {
-            Self::Npm => "npm ci".to_string(),
-            Self::Yarn => "yarn install --frozen-lockfile".to_string(),
-            Self::Pnpm => "pnpm install --frozen-lockfile".to_string(),
-            Self::Bun => "bun install".to_string(),
+    /// Install command for this package manager. With a committed lockfile use
+    /// the reproducible/frozen install; without one fall back to the plain
+    /// install (npm ci and --frozen-lockfile both hard-fail with no lockfile).
+    fn install_command(&self, has_lock: bool) -> String {
+        match (self, has_lock) {
+            (Self::Npm, true) => "npm ci".to_string(),
+            (Self::Npm, false) => "npm install".to_string(),
+            (Self::Yarn, true) => "yarn install --frozen-lockfile".to_string(),
+            (Self::Yarn, false) => "yarn install".to_string(),
+            (Self::Pnpm, true) => "pnpm install --frozen-lockfile".to_string(),
+            (Self::Pnpm, false) => "pnpm install".to_string(),
+            (Self::Bun, _) => "bun install".to_string(),
         }
     }
 
@@ -295,12 +302,30 @@ impl PackageManager {
         }
     }
 
-    fn lock_files(&self) -> Vec<String> {
+    /// Concrete lockfile names to test for presence (no globs).
+    const fn lock_file_names(&self) -> &'static [&'static str] {
         match self {
-            Self::Npm => vec!["package-lock.json".to_string()],
-            Self::Yarn => vec!["yarn.lock".to_string()],
-            Self::Pnpm => vec!["pnpm-lock.yaml".to_string()],
-            Self::Bun => vec!["bun.lock*".to_string()],
+            Self::Npm => &["package-lock.json"],
+            Self::Yarn => &["yarn.lock"],
+            Self::Pnpm => &["pnpm-lock.yaml"],
+            Self::Bun => &["bun.lockb", "bun.lock"],
+        }
+    }
+
+    /// Whether a committed lockfile for this package manager is present.
+    fn has_lockfile(&self, ctx: &AppContext) -> bool {
+        self.lock_file_names().iter().any(|f| ctx.has_file(f))
+    }
+
+    /// Glob for the lockfile in a `COPY` line. The trailing `*` makes it
+    /// optional so an absent lockfile does not fail the build (the directive is
+    /// paired with package.json, which always matches).
+    const fn lock_glob(&self) -> &'static str {
+        match self {
+            Self::Npm => "package-lock.json*",
+            Self::Yarn => "yarn.lock*",
+            Self::Pnpm => "pnpm-lock.yaml*",
+            Self::Bun => "bun.lock*",
         }
     }
 
@@ -506,6 +531,50 @@ mod tests {
         // start is `yarn start`, so the runtime image enables corepack too.
         let runtime = plan.stages.iter().find(|s| s.name == "runtime").unwrap();
         assert!(runtime.commands.iter().any(|c| c.run == "corepack enable"));
+    }
+
+    #[test]
+    fn npm_without_lockfile_uses_install_not_ci() {
+        // package.json but no committed lockfile: detection falls back to npm.
+        // `npm ci` would fail with no package-lock.json, so use `npm install`.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"t","scripts":{"start":"node i.js"}}"#,
+        )
+        .unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+
+        let deps = plan.stages.iter().find(|s| s.name == "deps").unwrap();
+        assert_eq!(deps.commands[0].run, "npm install");
+        // the lockfile is copied as an optional glob paired with package.json,
+        // so an absent lockfile never fails the COPY.
+        assert_eq!(deps.copy_files.len(), 1);
+        assert_eq!(deps.copy_files[0].src, "package.json package-lock.json*");
+    }
+
+    #[test]
+    fn pnpm_override_without_lockfile_drops_frozen_flag() {
+        // A package_manager override with no matching lockfile present must not
+        // emit --frozen-lockfile (which would hard-fail).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"name":"t"}"#).unwrap();
+        let ctx = AppContext::with_overrides(
+            dir.path(),
+            crate::BuildOverrides {
+                package_manager: Some("pnpm".to_string()),
+                install_command: None,
+                build_command: None,
+                start_command: None,
+            },
+        )
+        .unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+
+        let deps = plan.stages.iter().find(|s| s.name == "deps").unwrap();
+        assert_eq!(deps.commands[0].run, "corepack enable && pnpm install");
+        assert_eq!(deps.copy_files[0].src, "package.json pnpm-lock.yaml*");
     }
 
     // Overrides win over lockfile/script detection (for setups auto-detect can't

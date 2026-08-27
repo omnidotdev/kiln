@@ -37,16 +37,13 @@ impl Provider for GoProvider {
             name: "deps".to_string(),
             base_image: "golang:1.24".to_string(),
             workdir: "/app".to_string(),
-            copy_files: vec![
-                CopyDirective {
-                    src: "go.mod".to_string(),
-                    dest: ".".to_string(),
-                },
-                CopyDirective {
-                    src: "go.sum".to_string(),
-                    dest: ".".to_string(),
-                },
-            ],
+            // go.sum is a glob so a dependency-free module (which has no go.sum)
+            // does not fail the COPY; go.mod guarantees a match. `go mod
+            // download` is a no-op when there are no dependencies.
+            copy_files: vec![CopyDirective {
+                src: "go.mod go.sum*".to_string(),
+                dest: ".".to_string(),
+            }],
             copy_from: vec![],
             commands: vec![Command {
                 run: "go mod download".to_string(),
@@ -126,6 +123,18 @@ mod tests {
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = GoProvider.plan(&ctx).unwrap();
         assert_eq!(plan.start_command.as_deref(), Some("/bin/myapp"));
+    }
+
+    #[test]
+    fn go_sum_is_copied_as_optional_glob() {
+        // A module with no external deps has no go.sum; the COPY must not fail.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = GoProvider.plan(&ctx).unwrap();
+        let deps = plan.stages.iter().find(|s| s.name == "deps").unwrap();
+        assert_eq!(deps.copy_files.len(), 1);
+        assert_eq!(deps.copy_files[0].src, "go.mod go.sum*");
     }
 
     #[test]

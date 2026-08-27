@@ -17,7 +17,9 @@ impl Provider for GleamProvider {
     fn plan(&self, _ctx: &AppContext) -> Result<BuildPlan> {
         let build_stage = Stage {
             name: "build".to_string(),
-            base_image: "ghcr.io/gleam-lang/gleam:v1.7-erlang".to_string(),
+            // Image tags use the full patch version; `v1.7-erlang` does not
+            // exist and failed with "not found".
+            base_image: "ghcr.io/gleam-lang/gleam:v1.12.0-erlang".to_string(),
             workdir: "/app".to_string(),
             copy_files: vec![CopyDirective {
                 src: ".".to_string(),

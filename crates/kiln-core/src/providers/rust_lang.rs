@@ -48,7 +48,11 @@ impl Provider for RustProvider {
             }],
             copy_from: vec![],
             commands: vec![Command {
-                run: format!("cargo build --release --bin {binary}"),
+                // `/app/target` is a cache mount, so its contents are NOT in the
+                // build stage's image layer and cannot be `COPY --from`ed. Copy
+                // the compiled binary out to a real path in the same RUN, or the
+                // runtime COPY finds nothing.
+                run: format!("cargo build --release --bin {binary} && cp target/release/{binary} /{binary}"),
                 cache_mounts: vec!["/usr/local/cargo/registry".to_string(), "/app/target".to_string()],
             }],
         };
@@ -60,7 +64,7 @@ impl Provider for RustProvider {
             copy_files: vec![],
             copy_from: vec![CopyFrom {
                 stage: "build".to_string(),
-                src: format!("/app/target/release/{binary}"),
+                src: format!("/{binary}"),
                 dest: format!("/usr/local/bin/{binary}"),
             }],
             commands: vec![Command {
@@ -105,6 +109,29 @@ mod tests {
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = RustProvider.plan(&ctx).unwrap();
         assert_eq!(plan.start_command.as_deref(), Some("/usr/local/bin/my-service"));
+    }
+
+    #[test]
+    fn binary_is_copied_out_of_the_target_cache_mount() {
+        // /app/target is a cache mount, so the binary must be copied out to a
+        // real layer path in the build RUN and the runtime must COPY from there,
+        // not from under /app/target (which is empty in the committed layer).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"svc\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = RustProvider.plan(&ctx).unwrap();
+
+        let build = plan.stages.iter().find(|s| s.name == "build").unwrap();
+        assert!(build.commands[0].run.contains("cp target/release/svc /svc"));
+
+        let runtime = plan.stages.iter().find(|s| s.name == "runtime").unwrap();
+        let copied = &runtime.copy_from[0];
+        assert_eq!(copied.src, "/svc");
+        assert!(!copied.src.contains("/target/"));
     }
 
     #[test]

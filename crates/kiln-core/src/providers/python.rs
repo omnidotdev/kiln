@@ -113,11 +113,21 @@ impl Provider for PythonProvider {
                 src: ".".to_string(),
                 dest: ".".to_string(),
             }],
-            copy_from: vec![CopyFrom {
-                stage: "deps".to_string(),
-                src: pm.install_target().to_string(),
-                dest: pm.install_target().to_string(),
-            }],
+            copy_from: vec![
+                CopyFrom {
+                    stage: "deps".to_string(),
+                    src: pm.install_target().to_string(),
+                    dest: pm.install_target().to_string(),
+                },
+                // Console-script entrypoints (gunicorn, uvicorn, ...) install to
+                // /usr/local/bin, not site-packages; without this the framework
+                // start commands fail with "<tool>: not found".
+                CopyFrom {
+                    stage: "deps".to_string(),
+                    src: "/usr/local/bin".to_string(),
+                    dest: "/usr/local/bin".to_string(),
+                },
+            ],
             commands: vec![],
         };
 

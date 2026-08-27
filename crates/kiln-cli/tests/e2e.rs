@@ -89,6 +89,30 @@ const FIXTURES: &[Fixture] = &[
         port: 0,
         http: false,
     },
+    // Deno: fallback `deno run --allow-net main.ts`, Deno.serve
+    Fixture {
+        dir: "deno-app",
+        port: 8000,
+        http: true,
+    },
+    // .NET/ASP.NET: publish -> aspnet runtime, listens on 8080
+    Fixture {
+        dir: "dotnet-web",
+        port: 8080,
+        http: true,
+    },
+    // Static site: nginx serves index.html on port 80
+    Fixture {
+        dir: "static-html",
+        port: 80,
+        http: true,
+    },
+    // Shell worker: bash present on debian-slim, script runs and exits cleanly
+    Fixture {
+        dir: "shell-app",
+        port: 0,
+        http: false,
+    },
 ];
 
 fn fixtures_root() -> PathBuf {

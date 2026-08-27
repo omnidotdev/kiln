@@ -6,7 +6,14 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!target", "!node_modules"]
+    // Fixture apps under tests/fixtures are intentionally minimal sample repos
+    // (console.log, no lockfiles, etc.); they are not project source.
+    "includes": [
+      "**",
+      "!target",
+      "!node_modules",
+      "!crates/*/tests/fixtures/**"
+    ]
   },
   "formatter": {
     "indentStyle": "space",

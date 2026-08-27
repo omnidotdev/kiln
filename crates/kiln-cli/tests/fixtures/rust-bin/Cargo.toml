@@ -1,0 +1,8 @@
+[package]
+name = "rustbin"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rustbin"
+path = "src/main.rs"

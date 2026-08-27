@@ -489,6 +489,25 @@ mod tests {
         assert_eq!(npm_deps.commands[0].run, "npm ci");
     }
 
+    #[test]
+    fn yarn_enables_corepack_across_stages() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_node_project(dir.path(), "yarn");
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+
+        let deps = plan.stages.iter().find(|s| s.name == "deps").unwrap();
+        assert_eq!(
+            deps.commands[0].run,
+            "corepack enable && yarn install --frozen-lockfile"
+        );
+        let build = plan.stages.iter().find(|s| s.name == "build").unwrap();
+        assert_eq!(build.commands[0].run, "corepack enable && yarn run build");
+        // start is `yarn start`, so the runtime image enables corepack too.
+        let runtime = plan.stages.iter().find(|s| s.name == "runtime").unwrap();
+        assert!(runtime.commands.iter().any(|c| c.run == "corepack enable"));
+    }
+
     // Overrides win over lockfile/script detection (for setups auto-detect can't
     // handle). The package_manager override still flows into the corepack/bun
     // setup so the overridden install/build commands actually find the binary.

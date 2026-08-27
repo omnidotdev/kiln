@@ -22,8 +22,7 @@ impl PythonProvider {
 
     fn has_poetry_section(ctx: &AppContext) -> bool {
         ctx.read_file("pyproject.toml")
-            .ok()
-            .is_some_and(|c| c.contains("[tool.poetry]"))
+            .is_ok_and(|c| c.contains("[tool.poetry]"))
     }
 
     fn detect_framework(ctx: &AppContext) -> Option<PythonFramework> {

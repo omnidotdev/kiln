@@ -7,7 +7,7 @@ pub struct ElixirProvider;
 
 impl ElixirProvider {
     fn is_phoenix(ctx: &AppContext) -> bool {
-        ctx.read_file("mix.exs").ok().is_some_and(|c| c.contains(":phoenix"))
+        ctx.read_file("mix.exs").is_ok_and(|c| c.contains(":phoenix"))
     }
 }
 

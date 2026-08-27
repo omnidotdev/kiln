@@ -10,8 +10,7 @@ impl PhpProvider {
         ctx.has_file("artisan")
             || ctx
                 .read_file("composer.json")
-                .ok()
-                .is_some_and(|c| c.contains("laravel/framework"))
+                .is_ok_and(|c| c.contains("laravel/framework"))
     }
 }
 

@@ -7,7 +7,7 @@ pub struct RubyProvider;
 
 impl RubyProvider {
     fn is_rails(ctx: &AppContext) -> bool {
-        ctx.has_file("config/routes.rb") || ctx.read_file("Gemfile").ok().is_some_and(|c| c.contains("rails"))
+        ctx.has_file("config/routes.rb") || ctx.read_file("Gemfile").is_ok_and(|c| c.contains("rails"))
     }
 }
 

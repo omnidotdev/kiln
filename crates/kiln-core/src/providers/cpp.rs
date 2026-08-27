@@ -62,7 +62,10 @@ impl Provider for CppProvider {
 
         let runtime_stage = Stage {
             name: "runtime".to_string(),
-            base_image: "debian:bookworm-slim".to_string(),
+            // Match the gcc:14 toolchain's Debian (trixie): a binary built there
+            // needs GLIBCXX_3.4.32, which bookworm's older libstdc++ lacks.
+            // trixie-slim ships no libstdc++ at all, so install the matching one.
+            base_image: "debian:trixie-slim".to_string(),
             workdir: "/app".to_string(),
             copy_files: vec![],
             copy_from: vec![CopyFrom {
@@ -70,7 +73,10 @@ impl Provider for CppProvider {
                 src: copy_src.to_string(),
                 dest: "/app/app".to_string(),
             }],
-            commands: vec![],
+            commands: vec![Command {
+                run: "apt-get update && apt-get install -y --no-install-recommends libstdc++6 ca-certificates && rm -rf /var/lib/apt/lists/*".to_string(),
+                cache_mounts: vec!["/var/cache/apt".to_string()],
+            }],
         };
 
         Ok(BuildPlan {

@@ -44,6 +44,21 @@ const FIXTURES: &[Fixture] = &[
         dir: "rust-bin",
         port: 8080,
     },
+    // C++/CMake: cmake provisioned on gcc:14, binary launched via ./app, slim runtime
+    Fixture {
+        dir: "cpp-cmake",
+        port: 8080,
+    },
+    // Ruby/Sinatra: gems must land in the image layer (not a cache mount)
+    Fixture {
+        dir: "ruby-sinatra",
+        port: 3000,
+    },
+    // Python/Flask: pip install, site-packages copied into slim, gunicorn start
+    Fixture {
+        dir: "python-flask",
+        port: 8000,
+    },
 ];
 
 fn fixtures_root() -> PathBuf {

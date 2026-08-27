@@ -272,6 +272,11 @@ fn build_buildctl_args(
         format!("dockerfile={}", work_dir.display()),
         "--opt".to_string(),
         "filename=Dockerfile.kiln".to_string(),
+        // Always resolve base image tags to their latest registry digest instead
+        // of reusing whatever digest buildkit has cached, so a rebuild picks up
+        // upstream base-image security patches (e.g. node:22, python:3-slim).
+        "--opt".to_string(),
+        "image-resolve-mode=pull".to_string(),
     ];
 
     if let Some(cache_ref) = cache_from {
@@ -313,6 +318,9 @@ mod tests {
             args.iter()
                 .any(|a| a == "type=image,name=registry.example/app:abc123,push=true")
         );
+        // base images must always be pulled fresh so rebuilds pick up upstream
+        // security patches, matching the operator's dockerfile-mode invocation.
+        assert!(args.iter().any(|a| a == "image-resolve-mode=pull"));
     }
 
     #[test]

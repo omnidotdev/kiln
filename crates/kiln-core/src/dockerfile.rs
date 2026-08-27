@@ -42,11 +42,35 @@ pub fn generate(plan: &BuildPlan) -> String {
 
     // Start command
     if let Some(ref cmd) = plan.start_command {
-        lines.push(format!("CMD [\"/bin/sh\", \"-c\", \"{cmd}\"]"));
+        lines.push(cmd_line(cmd));
     }
 
     lines.push(String::new());
     lines.join("\n")
+}
+
+/// Render the `CMD` line for a start command.
+///
+/// Uses exec form (`CMD ["a", "b"]`) when the command needs no shell, so it
+/// runs on shell-less runtimes like distroless (the Go/Rust targets), where
+/// `/bin/sh` does not exist and a `sh -c` wrapper would crash the container.
+/// Falls back to `sh -c` only when the command needs a shell: env-var expansion
+/// (`$`), a `VAR=val` prefix (`=`), or operators/globs. Every runtime that
+/// receives such a command (python-slim, php-apache, debian-slim) has a shell.
+fn cmd_line(cmd: &str) -> String {
+    const SHELL_CHARS: &[char] = &[
+        '$', '`', '&', '|', ';', '<', '>', '(', ')', '{', '}', '*', '?', '~', '!', '#', '=', '\n',
+    ];
+    if cmd.contains(SHELL_CHARS) {
+        format!("CMD [\"/bin/sh\", \"-c\", \"{cmd}\"]")
+    } else {
+        let argv = cmd
+            .split_whitespace()
+            .map(|a| format!("\"{a}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("CMD [{argv}]")
+    }
 }
 
 #[cfg(test)]
@@ -90,7 +114,34 @@ mod tests {
     fn test_generates_expose_and_cmd() {
         let output = generate(&minimal_plan());
         assert!(output.contains("EXPOSE 3000"));
-        assert!(output.contains("CMD [\"/bin/sh\", \"-c\", \"node index.js\"]"));
+        // no shell features -> exec form, so it runs on shell-less runtimes
+        assert!(output.contains("CMD [\"node\", \"index.js\"]"));
+    }
+
+    #[test]
+    fn exec_form_cmd_for_shell_less_binary() {
+        // a bare binary path (the Go/distroless case) must be exec form, since
+        // distroless has no /bin/sh for a `sh -c` wrapper to exec.
+        assert_eq!(cmd_line("/bin/app"), "CMD [\"/bin/app\"]");
+        assert_eq!(
+            cmd_line("bundle exec rails server -b 0.0.0.0"),
+            "CMD [\"bundle\", \"exec\", \"rails\", \"server\", \"-b\", \"0.0.0.0\"]"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::literal_string_with_formatting_args)]
+    fn shell_form_cmd_when_a_shell_is_needed() {
+        // env-var expansion needs a shell
+        assert_eq!(
+            cmd_line("uvicorn main:app --port ${PORT:-8000}"),
+            "CMD [\"/bin/sh\", \"-c\", \"uvicorn main:app --port ${PORT:-8000}\"]"
+        );
+        // a VAR=val prefix needs a shell too
+        assert_eq!(
+            cmd_line("PHX_SERVER=true /app/bin/web start"),
+            "CMD [\"/bin/sh\", \"-c\", \"PHX_SERVER=true /app/bin/web start\"]"
+        );
     }
 
     #[test]

@@ -35,7 +35,7 @@ impl Provider for DenoProvider {
 
         let stage = Stage {
             name: "runtime".to_string(),
-            base_image: "denoland/deno:2".to_string(),
+            base_image: "denoland/deno:2.5.3".to_string(),
             workdir: "/app".to_string(),
             copy_files: vec![CopyDirective {
                 src: ".".to_string(),

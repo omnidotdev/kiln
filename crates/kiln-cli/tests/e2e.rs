@@ -119,7 +119,13 @@ fn verify(fx: &Fixture) -> Result<(), String> {
     }
     let cid = out.trim().to_string();
 
-    let result = probe(&cid, fx.port);
+    let mut result = probe(&cid, fx.port);
+    // On any failure, attach the container logs (a crashed container has no
+    // published port, so the probe never even reaches the HTTP check).
+    if let Err(e) = &result {
+        let (_, logs, logs_err) = run(Command::new("docker").args(["logs", "--tail", "20", &cid]));
+        result = Err(format!("{e}\n--- container logs ---\n{logs}{logs_err}"));
+    }
 
     // 4. always clean up the container
     let _ = run(Command::new("docker").args(["rm", "-f", &cid]));
@@ -151,11 +157,7 @@ fn probe(cid: &str, port: u16) -> Result<(), String> {
         last = err;
         std::thread::sleep(Duration::from_millis(1000));
     }
-    let (_, logs, logs_err) = run(Command::new("docker").args(["logs", "--tail", "20", cid]));
-    let logs = format!("{logs}{logs_err}");
-    Err(format!(
-        "probe {url} never succeeded: {last}\n--- container logs ---\n{logs}"
-    ))
+    Err(format!("probe {url} never succeeded: {last}"))
 }
 
 #[test]

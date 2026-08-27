@@ -31,16 +31,12 @@ impl Provider for PhpProvider {
             name: "deps".to_string(),
             base_image: "composer:2".to_string(),
             workdir: "/app".to_string(),
-            copy_files: vec![
-                CopyDirective {
-                    src: "composer.json".to_string(),
-                    dest: ".".to_string(),
-                },
-                CopyDirective {
-                    src: "composer.lock".to_string(),
-                    dest: ".".to_string(),
-                },
-            ],
+            // composer.lock is a glob so a project without a committed lockfile
+            // still builds; composer.json guarantees a match.
+            copy_files: vec![CopyDirective {
+                src: "composer.json composer.lock*".to_string(),
+                dest: ".".to_string(),
+            }],
             copy_from: vec![],
             commands: vec![Command {
                 run: "composer install --no-dev --optimize-autoloader".to_string(),
@@ -64,17 +60,24 @@ impl Provider for PhpProvider {
             commands: vec![],
         };
 
-        let start_cmd = if is_laravel {
-            Some("php artisan serve --host=0.0.0.0 --port=${PORT:-8080}".to_string())
+        // Laravel runs `artisan serve` on 8080; a plain PHP app has no start
+        // command and is served by the php:8.3-apache image's apache, which
+        // listens on 80. The declared port must match what actually listens, or
+        // the platform routes to a dead port.
+        let (start_cmd, port) = if is_laravel {
+            (
+                Some("php artisan serve --host=0.0.0.0 --port=${PORT:-8080}".to_string()),
+                8080,
+            )
         } else {
-            None
+            (None, 80)
         };
 
         Ok(BuildPlan {
             provider: "php".to_string(),
             stages: vec![deps_stage, runtime_stage],
             start_command: start_cmd,
-            port: Some(8080),
+            port: Some(port),
         })
     }
 }
@@ -101,8 +104,12 @@ mod tests {
         assert_eq!(plan.stages.len(), 2);
         assert_eq!(plan.stages[0].name, "deps");
         assert_eq!(plan.stages[1].name, "runtime");
+        // plain PHP is served by apache on port 80, not 8080
         assert!(plan.start_command.is_none());
-        assert_eq!(plan.port, Some(8080));
+        assert_eq!(plan.port, Some(80));
+        // composer.lock is copied as an optional glob paired with composer.json
+        assert_eq!(plan.stages[0].copy_files.len(), 1);
+        assert_eq!(plan.stages[0].copy_files[0].src, "composer.json composer.lock*");
     }
 
     #[test]
@@ -116,5 +123,7 @@ mod tests {
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = PhpProvider.plan(&ctx).unwrap();
         assert!(plan.start_command.as_ref().unwrap().contains("artisan"));
+        // artisan serve binds 8080
+        assert_eq!(plan.port, Some(8080));
     }
 }

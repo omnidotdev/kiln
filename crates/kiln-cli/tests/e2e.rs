@@ -59,6 +59,11 @@ const FIXTURES: &[Fixture] = &[
         dir: "python-flask",
         port: 8000,
     },
+    // Java/Spring Boot Gradle: select the executable jar, not the -plain jar
+    Fixture {
+        dir: "java-spring",
+        port: 8080,
+    },
 ];
 
 fn fixtures_root() -> PathBuf {

@@ -78,8 +78,16 @@ impl Provider for JavaProvider {
                     run: tool.build_command().to_string(),
                     cache_mounts: vec![tool.cache_dir().to_string()],
                 },
+                // Gradle (and Spring Boot) emit several jars in the output dir:
+                // the executable one plus `-plain`/`-sources`/`-javadoc`
+                // variants. A plain `cp *.jar` would fail (multiple sources into
+                // a non-directory) or grab the non-runnable plain jar, so pick
+                // the largest jar that is not one of those variants.
                 Command {
-                    run: format!("cp {} /app/app.jar", tool.jar_source()),
+                    run: format!(
+                        "cp \"$(ls -S {} | grep -Ev -- '-(plain|sources|javadoc)\\.jar$' | head -1)\" /app/app.jar",
+                        tool.jar_source()
+                    ),
                     cache_mounts: vec![],
                 },
             ],
@@ -157,5 +165,20 @@ mod tests {
                 .cache_mounts
                 .contains(&"/root/.gradle".to_string())
         );
+    }
+
+    #[test]
+    fn jar_copy_excludes_plain_and_aux_jars() {
+        // A Spring Boot Gradle build emits app.jar AND app-plain.jar; the copy
+        // must select the executable jar, not fail on multiple sources or grab
+        // the non-runnable plain jar.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("build.gradle"), "").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = JavaProvider.plan(&ctx).unwrap();
+        let copy = &plan.stages[0].commands[1].run;
+        assert!(copy.contains("/app/build/libs/*.jar"));
+        assert!(copy.contains("-(plain|sources|javadoc)"));
+        assert!(copy.ends_with("/app/app.jar"));
     }
 }

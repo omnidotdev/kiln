@@ -66,7 +66,10 @@ impl Provider for ElixirProvider {
 
         let runtime_stage = Stage {
             name: "runtime".to_string(),
-            base_image: "debian:bookworm-slim".to_string(),
+            // Match the elixir:1.18 toolchain's Debian (trixie): the release
+            // bundles ERTS built against trixie's GLIBC 2.38+, which
+            // bookworm-slim (2.36) cannot run ("GLIBC_2.38 not found").
+            base_image: "debian:trixie-slim".to_string(),
             workdir: "/app".to_string(),
             copy_files: vec![],
             // Copy the release itself (`_build/prod/rel/<app>`) into /app so the
@@ -86,12 +89,14 @@ impl Provider for ElixirProvider {
         };
 
         // Launch the OTP release binary, not `mix` (mix is not in the runtime
-        // image). For Phoenix, PHX_SERVER=true makes the release boot the web
-        // endpoint (the generated runtime.exs gates the server on it).
+        // image). ELIXIR_ERL_OPTIONS=+fnu forces UTF-8 filename encoding, which
+        // the slim runtime lacks a locale for (else the VM warns it "may
+        // malfunction"). For Phoenix, PHX_SERVER=true makes the release boot the
+        // web endpoint (the generated runtime.exs gates the server on it).
         let start_cmd = if is_phoenix {
-            format!("PHX_SERVER=true /app/bin/{app} start")
+            format!("PHX_SERVER=true ELIXIR_ERL_OPTIONS=+fnu /app/bin/{app} start")
         } else {
-            format!("/app/bin/{app} start")
+            format!("ELIXIR_ERL_OPTIONS=+fnu /app/bin/{app} start")
         };
 
         Ok(BuildPlan {
@@ -129,7 +134,10 @@ mod tests {
         let plan = ElixirProvider.plan(&ctx).unwrap();
         assert_eq!(plan.provider, "elixir");
         assert_eq!(plan.stages.len(), 2);
-        assert_eq!(plan.start_command.as_deref(), Some("/app/bin/my_app start"));
+        assert_eq!(
+            plan.start_command.as_deref(),
+            Some("ELIXIR_ERL_OPTIONS=+fnu /app/bin/my_app start")
+        );
         assert_eq!(plan.port, Some(4000));
 
         // the release dir for this app is copied into /app, and crypto's libssl
@@ -145,7 +153,10 @@ mod tests {
         std::fs::write(dir.path().join("mix.exs"), "defmodule MyApp do end").unwrap();
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = ElixirProvider.plan(&ctx).unwrap();
-        assert_eq!(plan.start_command.as_deref(), Some("/app/bin/app start"));
+        assert_eq!(
+            plan.start_command.as_deref(),
+            Some("ELIXIR_ERL_OPTIONS=+fnu /app/bin/app start")
+        );
     }
 
     #[test]
@@ -160,7 +171,7 @@ mod tests {
         let plan = ElixirProvider.plan(&ctx).unwrap();
         assert_eq!(
             plan.start_command.as_deref(),
-            Some("PHX_SERVER=true /app/bin/web start")
+            Some("PHX_SERVER=true ELIXIR_ERL_OPTIONS=+fnu /app/bin/web start")
         );
     }
 }

@@ -32,7 +32,10 @@ impl Provider for CppProvider {
                 // cmake, so provision it before invoking the build
                 "apt-get update && apt-get install -y --no-install-recommends cmake && cmake -B build && cmake --build build"
                     .to_string(),
-                "./build/app".to_string(),
+                // both build systems copy the binary to /app/app (see copy_src
+                // below), so the runtime launches ./app regardless; the CMake
+                // binary is at /app/build/app in the BUILD stage only
+                "./app".to_string(),
             ),
             BuildSystem::Make => ("make".to_string(), "./app".to_string()),
         };
@@ -111,7 +114,10 @@ mod tests {
         // gcc:14 lacks cmake, so the build stage must provision it first
         assert!(plan.stages[0].commands[0].run.contains("install"));
         assert!(plan.stages[0].commands[0].run.contains("cmake -B build"));
-        assert_eq!(plan.start_command.as_deref(), Some("./build/app"));
+        // the binary is copied to /app/app, so the runtime launches ./app (not
+        // ./build/app, which only exists in the build stage)
+        assert_eq!(plan.start_command.as_deref(), Some("./app"));
+        assert_eq!(plan.stages[1].copy_from[0].dest, "/app/app");
         assert_eq!(plan.port, Some(8080));
     }
 

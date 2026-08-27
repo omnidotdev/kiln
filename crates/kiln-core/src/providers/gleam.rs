@@ -43,10 +43,13 @@ impl Provider for GleamProvider {
             commands: vec![],
         };
 
+        // `gleam` (the build tool) is not in erlang:27-slim; the erlang-shipment
+        // ships a self-contained entrypoint.sh that boots via `erl` (which is
+        // present). It is copied into /app, so launch /app/entrypoint.sh run.
         Ok(BuildPlan {
             provider: "gleam".to_string(),
             stages: vec![build_stage, runtime_stage],
-            start_command: Some("gleam run".to_string()),
+            start_command: Some("/app/entrypoint.sh run".to_string()),
             port: Some(8080),
         })
     }
@@ -75,7 +78,8 @@ mod tests {
         assert_eq!(plan.stages[0].name, "build");
         assert_eq!(plan.stages[1].name, "runtime");
         assert_eq!(plan.stages[1].base_image, "erlang:27-slim");
-        assert_eq!(plan.start_command.as_deref(), Some("gleam run"));
+        // erlang:27-slim has no `gleam`; the shipment's entrypoint.sh boots it.
+        assert_eq!(plan.start_command.as_deref(), Some("/app/entrypoint.sh run"));
         assert_eq!(plan.port, Some(8080));
     }
 }

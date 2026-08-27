@@ -64,6 +64,11 @@ const FIXTURES: &[Fixture] = &[
         dir: "java-spring",
         port: 8080,
     },
+    // Elixir OTP release: launch bin/<app>, matching-GLIBC runtime, libssl
+    Fixture {
+        dir: "elixir-release",
+        port: 4000,
+    },
 ];
 
 fn fixtures_root() -> PathBuf {

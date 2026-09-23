@@ -199,7 +199,9 @@ fn cmd_build(
 
     // Clone source repo if provided
     let work_dir = if let Some(url) = source {
-        let tmp = std::env::temp_dir().join("kiln-build");
+        // Per-process checkout dir so concurrent builds do not collide and we
+        // never delete an unrelated pre-existing /tmp/kiln-build.
+        let tmp = std::env::temp_dir().join(format!("kiln-build-{}", std::process::id()));
         if tmp.exists() {
             std::fs::remove_dir_all(&tmp)?;
         }

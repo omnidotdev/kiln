@@ -10,6 +10,31 @@ enum BuildSystem {
     Make,
 }
 
+impl CppProvider {
+    /// Best-effort executable name for a `CMake` project, read from the first
+    /// `add_executable(<name> ...)` target. Falls back to `app` when the target
+    /// cannot be parsed or is not a plain identifier (e.g. a `${VAR}` name), so
+    /// the value is always safe to interpolate into the Dockerfile.
+    fn cmake_executable_name(ctx: &AppContext) -> String {
+        let content = ctx.read_file("CMakeLists.txt").unwrap_or_default();
+        let lower = content.to_ascii_lowercase();
+        let Some(call) = lower.find("add_executable(") else {
+            return "app".to_string();
+        };
+        let after = &content[call + "add_executable(".len()..];
+        let name: String = after
+            .chars()
+            .skip_while(|c| c.is_whitespace())
+            .take_while(|c| !c.is_whitespace() && *c != ')')
+            .collect();
+        if crate::sanitize::validate_token("CMake target", &name).is_ok() {
+            name
+        } else {
+            "app".to_string()
+        }
+    }
+}
+
 impl Provider for CppProvider {
     fn name(&self) -> &'static str {
         "cpp"
@@ -26,18 +51,23 @@ impl Provider for CppProvider {
             BuildSystem::Make
         };
 
+        // The runtime copies the binary to /app/<name> and launches ./<name>.
+        // For CMake the target name comes from add_executable; Make cannot be
+        // parsed reliably, so it keeps the `app` convention.
+        let binary = match build_system {
+            BuildSystem::CMake => Self::cmake_executable_name(ctx),
+            BuildSystem::Make => "app".to_string(),
+        };
+
         let (build_cmd, start_cmd) = match build_system {
             BuildSystem::CMake => (
                 // gcc:14 (buildpack-deps/Debian) ships gcc and make but NOT
                 // cmake, so provision it before invoking the build
                 "apt-get update && apt-get install -y --no-install-recommends cmake && cmake -B build && cmake --build build"
                     .to_string(),
-                // both build systems copy the binary to /app/app (see copy_src
-                // below), so the runtime launches ./app regardless; the CMake
-                // binary is at /app/build/app in the BUILD stage only
-                "./app".to_string(),
+                format!("./{binary}"),
             ),
-            BuildSystem::Make => ("make".to_string(), "./app".to_string()),
+            BuildSystem::Make => ("make".to_string(), format!("./{binary}")),
         };
 
         let build_stage = Stage {
@@ -55,9 +85,11 @@ impl Provider for CppProvider {
             }],
         };
 
+        // CMake writes the executable into the build tree (build/<name>); a
+        // plain Makefile writes it into the source root.
         let copy_src = match build_system {
-            BuildSystem::CMake => "/app/build/app",
-            BuildSystem::Make => "/app/app",
+            BuildSystem::CMake => format!("/app/build/{binary}"),
+            BuildSystem::Make => format!("/app/{binary}"),
         };
 
         let runtime_stage = Stage {
@@ -70,8 +102,8 @@ impl Provider for CppProvider {
             copy_files: vec![],
             copy_from: vec![CopyFrom {
                 stage: "build".to_string(),
-                src: copy_src.to_string(),
-                dest: "/app/app".to_string(),
+                src: copy_src,
+                dest: format!("/app/{binary}"),
             }],
             commands: vec![Command {
                 run: "apt-get update && apt-get install -y --no-install-recommends libstdc++6 ca-certificates && rm -rf /var/lib/apt/lists/*".to_string(),
@@ -125,6 +157,30 @@ mod tests {
         assert_eq!(plan.start_command.as_deref(), Some("./app"));
         assert_eq!(plan.stages[1].copy_from[0].dest, "/app/app");
         assert_eq!(plan.port, Some(8080));
+    }
+
+    #[test]
+    fn cmake_binary_name_derived_from_add_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("CMakeLists.txt"),
+            "cmake_minimum_required(VERSION 3.10)\nproject(demo)\nadd_executable(server main.cpp)\n",
+        )
+        .unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = CppProvider.plan(&ctx).unwrap();
+        assert_eq!(plan.start_command.as_deref(), Some("./server"));
+        assert_eq!(plan.stages[1].copy_from[0].src, "/app/build/server");
+        assert_eq!(plan.stages[1].copy_from[0].dest, "/app/server");
+    }
+
+    #[test]
+    fn cmake_falls_back_to_app_without_add_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("CMakeLists.txt"), "project(myapp)").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = CppProvider.plan(&ctx).unwrap();
+        assert_eq!(plan.start_command.as_deref(), Some("./app"));
     }
 
     #[test]

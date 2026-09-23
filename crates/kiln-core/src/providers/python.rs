@@ -116,8 +116,8 @@ impl Provider for PythonProvider {
             copy_from: vec![
                 CopyFrom {
                     stage: "deps".to_string(),
-                    src: pm.install_target().to_string(),
-                    dest: pm.install_target().to_string(),
+                    src: SITE_PACKAGES.to_string(),
+                    dest: SITE_PACKAGES.to_string(),
                 },
                 // Console-script entrypoints (gunicorn, uvicorn, ...) install to
                 // /usr/local/bin, not site-packages; without this the framework
@@ -161,6 +161,10 @@ impl PythonPm {
                 "pip install --no-cache-dir -r requirements.txt".to_string(),
                 vec!["/root/.cache/pip".to_string()],
             ),
+            // uv sync installs into /app/.venv, which the runtime stage neither
+            // copies onto PATH nor activates. Resolve the locked deps to a
+            // requirements file and install them into the system environment
+            // instead, so the uniform site-packages + /usr/local/bin copy works.
             Self::Uv => (
                 vec![
                     CopyDirective {
@@ -172,9 +176,13 @@ impl PythonPm {
                         dest: ".".to_string(),
                     },
                 ],
-                "pip install uv && uv sync --frozen".to_string(),
-                vec!["/root/.cache/uv".to_string()],
+                "pip install uv && uv export --frozen --no-dev --no-emit-project -o /tmp/requirements.txt && pip install --no-cache-dir -r /tmp/requirements.txt".to_string(),
+                vec!["/root/.cache/uv".to_string(), "/root/.cache/pip".to_string()],
             ),
+            // POETRY_VIRTUALENVS_CREATE=false forces poetry to install into the
+            // system site-packages rather than its own cached virtualenv;
+            // --no-root skips installing the project itself (its source is copied
+            // into the runtime stage, not built as a package here).
             Self::Poetry => (
                 vec![
                     CopyDirective {
@@ -186,9 +194,11 @@ impl PythonPm {
                         dest: ".".to_string(),
                     },
                 ],
-                "pip install poetry && poetry install --no-interaction --no-ansi".to_string(),
+                "pip install poetry && POETRY_VIRTUALENVS_CREATE=false poetry install --no-interaction --no-ansi --no-root".to_string(),
                 vec!["/root/.cache/pypoetry".to_string()],
             ),
+            // pipenv --system installs into the system site-packages instead of
+            // a project virtualenv.
             Self::Pipenv => (
                 vec![
                     CopyDirective {
@@ -200,9 +210,11 @@ impl PythonPm {
                         dest: ".".to_string(),
                     },
                 ],
-                "pip install pipenv && pipenv install --deploy".to_string(),
+                "pip install pipenv && pipenv install --deploy --system".to_string(),
                 vec!["/root/.cache/pipenv".to_string()],
             ),
+            // pdm's own install uses PEP 582 __pypackages__ or a venv, neither on
+            // the system path. Export the locked deps and install them with pip.
             Self::Pdm => (
                 vec![
                     CopyDirective {
@@ -214,19 +226,17 @@ impl PythonPm {
                         dest: ".".to_string(),
                     },
                 ],
-                "pip install pdm && pdm install --frozen".to_string(),
-                vec!["/root/.cache/pdm".to_string()],
+                "pip install pdm && pdm export --no-hashes -o /tmp/requirements.txt && pip install --no-cache-dir -r /tmp/requirements.txt".to_string(),
+                vec!["/root/.cache/pdm".to_string(), "/root/.cache/pip".to_string()],
             ),
         }
     }
-
-    const fn install_target(&self) -> &str {
-        match self {
-            Self::Uv => "/app/.venv",
-            Self::Pip | Self::Poetry | Self::Pipenv | Self::Pdm => "/usr/local/lib/python3.13/site-packages",
-        }
-    }
 }
+
+/// Where installed dependencies land in the deps stage. Every manager is
+/// configured to install into the interpreter's system site-packages, so the
+/// runtime stage copies one uniform path.
+const SITE_PACKAGES: &str = "/usr/local/lib/python3.13/site-packages";
 
 enum PythonFramework {
     Django,
@@ -296,6 +306,58 @@ mod tests {
         std::fs::write(dir.path().join("main.py"), "").unwrap();
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = PythonProvider.plan(&ctx).unwrap();
-        assert!(plan.stages[0].commands[0].run.contains("uv sync"));
+        assert!(plan.stages[0].commands[0].run.contains("uv export"));
+    }
+
+    // Every non-pip manager must resolve dependencies into the SYSTEM
+    // site-packages (and /usr/local/bin) that the runtime stage copies. If it
+    // installs into its own virtualenv instead, the runtime image has the
+    // manager but not the project's dependencies and the app fails to import.
+    fn deps_run(dir: &std::path::Path) -> (String, String) {
+        let ctx = AppContext::new(dir).unwrap();
+        let plan = PythonProvider.plan(&ctx).unwrap();
+        (
+            plan.stages[0].commands[0].run.clone(),
+            plan.stages[1].copy_from[0].src.clone(),
+        )
+    }
+
+    #[test]
+    fn poetry_installs_into_system_site_packages() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pyproject.toml"), "[tool.poetry]\n").unwrap();
+        std::fs::write(dir.path().join("poetry.lock"), "").unwrap();
+        let (run, target) = deps_run(dir.path());
+        assert!(run.contains("POETRY_VIRTUALENVS_CREATE=false"), "got: {run}");
+        assert_eq!(target, SITE_PACKAGES);
+    }
+
+    #[test]
+    fn uv_installs_into_system_not_venv() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pyproject.toml"), "[project]\n").unwrap();
+        std::fs::write(dir.path().join("uv.lock"), "").unwrap();
+        let (run, target) = deps_run(dir.path());
+        assert!(run.contains("uv export"), "got: {run}");
+        assert_eq!(target, SITE_PACKAGES);
+    }
+
+    #[test]
+    fn pipenv_installs_into_system() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Pipfile"), "").unwrap();
+        let (run, target) = deps_run(dir.path());
+        assert!(run.contains("--system"), "got: {run}");
+        assert_eq!(target, SITE_PACKAGES);
+    }
+
+    #[test]
+    fn pdm_installs_into_system_site_packages() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pyproject.toml"), "[tool.pdm]\n").unwrap();
+        std::fs::write(dir.path().join("pdm.lock"), "").unwrap();
+        let (run, target) = deps_run(dir.path());
+        assert!(run.contains("pdm export"), "got: {run}");
+        assert_eq!(target, SITE_PACKAGES);
     }
 }

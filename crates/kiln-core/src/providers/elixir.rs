@@ -24,7 +24,9 @@ impl ElixirProvider {
             if standalone_key {
                 if let Some(atom) = content[idx + 4..].trim_start().strip_prefix(':') {
                     let name: String = atom.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
-                    if !name.is_empty() {
+                    // Only accept a name that is safe to interpolate into the
+                    // release path and CMD (rejects a non-ASCII atom too)
+                    if crate::sanitize::validate_token("mix.exs app name", &name).is_ok() {
                         return name;
                     }
                 }
@@ -151,6 +153,24 @@ mod tests {
     fn app_name_falls_back_when_absent() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("mix.exs"), "defmodule MyApp do end").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = ElixirProvider.plan(&ctx).unwrap();
+        assert_eq!(
+            plan.start_command.as_deref(),
+            Some("ELIXIR_ERL_OPTIONS=+fnu /app/bin/app start")
+        );
+    }
+
+    #[test]
+    fn non_ascii_app_name_falls_back_to_app() {
+        // a non-ASCII atom is not a valid identifier for the release path/CMD;
+        // fall back to `app` rather than emitting a non-ASCII name
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mix.exs"),
+            "defmodule M do\n  def project, do: [app: :caf\u{e9}]\nend",
+        )
+        .unwrap();
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = ElixirProvider.plan(&ctx).unwrap();
         assert_eq!(

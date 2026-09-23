@@ -70,6 +70,20 @@ const FIXTURES: &[Fixture] = &[
         port: 8000,
         http: true,
     },
+    // Python/Poetry: POETRY_VIRTUALENVS_CREATE=false installs deps into the
+    // system site-packages the runtime copies (not a project virtualenv)
+    Fixture {
+        dir: "python-poetry",
+        port: 8000,
+        http: true,
+    },
+    // Python/uv: locked deps exported to requirements and pip-installed into the
+    // system environment, so the runtime copy resolves them
+    Fixture {
+        dir: "python-uv",
+        port: 8000,
+        http: true,
+    },
     // Java/Spring Boot Gradle: select the executable jar, not the -plain jar
     Fixture {
         dir: "java-spring",

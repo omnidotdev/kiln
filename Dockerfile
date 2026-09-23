@@ -15,5 +15,4 @@ COPY --from=moby/buildkit:v0.21.1 /usr/bin/buildctl /usr/local/bin/buildctl
 
 COPY --from=build /app/target/release/kiln /usr/local/bin/kiln
 
-EXPOSE 8080
 ENTRYPOINT ["kiln"]

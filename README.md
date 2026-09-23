@@ -14,17 +14,17 @@ the output is a standard artifact that works everywhere.
 
 ## Why Kiln
 
-- **Zero config** &mdash; detects your language and framework and builds a sensible,
+- **Zero config**: detects your language and framework and builds a sensible,
   production-ready image out of the box
-- **Transparent output** &mdash; emits a real Dockerfile you can read, version, and
+- **Transparent output**: emits a real Dockerfile you can read, version, and
   customize, not a black box
-- **Portable** &mdash; the generated Dockerfile and image work with any registry and
+- **Portable**: the generated Dockerfile and image work with any registry and
   any Docker- or BuildKit-based platform
-- **Fast and self-contained** &mdash; a single Rust binary with no runtime
+- **Fast and self-contained**: a single Rust binary with no runtime
   dependencies
-- **Multi-stage by default** &mdash; slim final images that ship only what runs, not
+- **Multi-stage by default**: slim final images that ship only what runs, not
   your build toolchain
-- **Open source** &mdash; Apache-2.0 licensed
+- **Open source**: Apache-2.0 licensed
 
 ## Supported languages
 
@@ -75,9 +75,9 @@ build straight from a Git source with `--source <url> --ref <sha>`.
 
 Kiln has two parts:
 
-- **`kiln-core`** &mdash; language detection, build planning, and Dockerfile
+- **`kiln-core`**: language detection, build planning, and Dockerfile
   generation. Each supported language is a self-contained provider.
-- **`kiln-cli`** &mdash; the `kiln` command-line interface, which drives detection,
+- **`kiln-cli`**: the `kiln` command-line interface, which drives detection,
   planning, and building (via [BuildKit](https://github.com/moby/buildkit)).
 
 Detection inspects a project's files (manifests, lockfiles, entrypoints) to

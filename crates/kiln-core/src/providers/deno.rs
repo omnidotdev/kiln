@@ -53,6 +53,7 @@ impl Provider for DenoProvider {
             stages: vec![stage],
             start_command: Some(start_cmd),
             port: Some(8000),
+            ..Default::default()
         })
     }
 }

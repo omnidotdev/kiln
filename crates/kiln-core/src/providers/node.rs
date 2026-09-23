@@ -173,8 +173,13 @@ impl Provider for NodeProvider {
             Self::detect_start_command(ctx, &pm)?
         };
 
-        let base_image = "node:22-slim".to_string();
-        let build_image = "node:22".to_string();
+        // Runtime version: `version` override, else `.nvmrc`/`.node-version`,
+        // else the current default. Slim runtime, full image for the build.
+        let detected = crate::providers::version_from_file(ctx, ".nvmrc")
+            .or_else(|| crate::providers::version_from_file(ctx, ".node-version"));
+        let version = crate::providers::resolve_version(ctx, detected, "22")?;
+        let base_image = format!("node:{version}-slim");
+        let build_image = format!("node:{version}");
 
         // `npm ci` / `--frozen-lockfile` hard-fail without a committed lockfile
         // (e.g. a repo that never committed one, so detection fell back to npm,
@@ -248,6 +253,7 @@ impl Provider for NodeProvider {
             stages,
             start_command: start_cmd,
             port: Some(3000),
+            ..Default::default()
         })
     }
 }
@@ -399,6 +405,36 @@ mod tests {
         std::fs::write(dir.path().join("main.go"), "").unwrap();
         let ctx = AppContext::new(dir.path()).unwrap();
         assert!(!NodeProvider.detect(&ctx));
+    }
+
+    #[test]
+    fn version_override_changes_node_base_image() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_node_project(dir.path(), "npm");
+        let ctx = AppContext::with_overrides(
+            dir.path(),
+            crate::BuildOverrides {
+                version: Some("20".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "node:20"), "build image");
+        assert!(
+            plan.stages.iter().any(|s| s.base_image == "node:20-slim"),
+            "runtime image"
+        );
+    }
+
+    #[test]
+    fn nvmrc_sets_node_version() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_node_project(dir.path(), "npm");
+        std::fs::write(dir.path().join(".nvmrc"), "18\n").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "node:18-slim"));
     }
 
     #[test]
@@ -600,6 +636,7 @@ mod tests {
                 install_command: None,
                 build_command: None,
                 start_command: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -628,6 +665,7 @@ mod tests {
                 install_command: Some("pnpm install --prod".to_string()),
                 build_command: Some("pnpm turbo build".to_string()),
                 start_command: Some("node dist/main.js".to_string()),
+                ..Default::default()
             },
         )
         .unwrap();

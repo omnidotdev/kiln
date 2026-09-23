@@ -53,6 +53,7 @@ impl Provider for GleamProvider {
             stages: vec![build_stage, runtime_stage],
             start_command: Some("/app/entrypoint.sh run".to_string()),
             port: Some(8080),
+            ..Default::default()
         })
     }
 }

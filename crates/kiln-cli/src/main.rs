@@ -127,6 +127,7 @@ fn main() {
                 install_command: install_cmd,
                 build_command: build_cmd,
                 start_command: start_cmd,
+                ..Default::default()
             },
         ),
     };

@@ -38,10 +38,12 @@ impl Provider for RustProvider {
     fn plan(&self, ctx: &AppContext) -> Result<BuildPlan> {
         let binary = Self::binary_name(ctx);
         crate::sanitize::validate_token("Cargo.toml package name", &binary)?;
+        let version = crate::providers::resolve_version(ctx, None, "1.85")?;
+        let build_image = format!("rust:{version}");
 
         let build_stage = Stage {
             name: "build".to_string(),
-            base_image: "rust:1.85".to_string(),
+            base_image: build_image,
             workdir: "/app".to_string(),
             copy_files: vec![CopyDirective {
                 src: ".".to_string(),
@@ -79,6 +81,7 @@ impl Provider for RustProvider {
             stages: vec![build_stage, runtime_stage],
             start_command: Some(format!("/usr/local/bin/{binary}")),
             port: Some(8080),
+            ..Default::default()
         })
     }
 }
@@ -101,6 +104,26 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn rust_version_override_changes_build_image() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let ctx = AppContext::with_overrides(
+            dir.path(),
+            crate::BuildOverrides {
+                version: Some("1.82".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let plan = RustProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "rust:1.82"));
+    }
 
     #[test]
     fn detects_rust_project() {

@@ -78,6 +78,7 @@ impl Provider for PhpProvider {
             stages: vec![deps_stage, runtime_stage],
             start_command: start_cmd,
             port: Some(port),
+            ..Default::default()
         })
     }
 }

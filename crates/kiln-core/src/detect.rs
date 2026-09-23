@@ -9,6 +9,10 @@ use crate::providers;
 /// leaves the detected value in place).
 #[derive(Debug, Default, Clone)]
 pub struct BuildOverrides {
+    /// Force a provider instead of auto-detecting (e.g. "node"|"go"|"python").
+    pub provider: Option<String>,
+    /// Runtime version for the base image, when the provider supports it.
+    pub version: Option<String>,
     /// Force a package manager (e.g. "npm"|"pnpm"|"yarn"|"bun") instead of
     /// lockfile sniffing.
     pub package_manager: Option<String>,
@@ -18,6 +22,10 @@ pub struct BuildOverrides {
     pub build_command: Option<String>,
     /// Replace the runtime start command.
     pub start_command: Option<String>,
+    /// Override the port the application listens on.
+    pub port: Option<u16>,
+    /// Environment variables to set in the runtime image.
+    pub env: std::collections::BTreeMap<String, String>,
 }
 
 /// Context for a project being analyzed.
@@ -109,16 +117,45 @@ pub fn detect_and_plan(root: impl AsRef<Path>) -> Result<BuildPlan> {
 ///
 /// Returns `NoProviderDetected` if no provider matches.
 pub fn detect_and_plan_with(root: impl AsRef<Path>, overrides: BuildOverrides) -> Result<BuildPlan> {
-    let ctx = AppContext::with_overrides(root.as_ref(), overrides)?;
+    let root = root.as_ref();
 
-    for provider in providers::all() {
-        if provider.detect(&ctx) {
-            tracing::info!(provider = provider.name(), "detected project language");
-            return provider.plan(&ctx);
+    // A kiln.json / kiln.toml fills any field the caller (CLI) left unset, so an
+    // explicit flag always wins over the config file.
+    let overrides = match crate::config::KilnConfig::load(root)? {
+        Some(config) => config.merge_into(overrides),
+        None => overrides,
+    };
+
+    let forced_provider = overrides.provider.clone();
+    let port_override = overrides.port;
+    let env = overrides.env.clone();
+    let ctx = AppContext::with_overrides(root, overrides)?;
+
+    let mut plan = if let Some(name) = forced_provider {
+        let provider = providers::all()
+            .into_iter()
+            .find(|p| p.name() == name)
+            .ok_or_else(|| Error::Provider(format!("unknown provider: {name}")))?;
+        tracing::info!(provider = provider.name(), "using configured provider");
+        provider.plan(&ctx)?
+    } else {
+        let mut plan = None;
+        for provider in providers::all() {
+            if provider.detect(&ctx) {
+                tracing::info!(provider = provider.name(), "detected project language");
+                plan = Some(provider.plan(&ctx)?);
+                break;
+            }
         }
-    }
+        plan.ok_or_else(|| Error::NoProviderDetected(ctx.root.clone()))?
+    };
 
-    Err(Error::NoProviderDetected(ctx.root))
+    if let Some(port) = port_override {
+        plan.port = Some(port);
+    }
+    plan.env = env;
+
+    Ok(plan)
 }
 
 /// Detect the project language without generating a plan.
@@ -138,4 +175,42 @@ pub fn detect(root: impl AsRef<Path>) -> Result<Option<String>> {
     }
 
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_forces_provider_over_detection() {
+        // a repo with BOTH go.mod and package.json; config forces node
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"name":"t","main":"index.js"}"#).unwrap();
+        std::fs::write(dir.path().join("kiln.json"), r#"{"provider":"node"}"#).unwrap();
+        let plan = detect_and_plan(dir.path()).unwrap();
+        assert_eq!(plan.provider, "node");
+    }
+
+    #[test]
+    fn config_applies_port_and_env() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
+        std::fs::write(
+            dir.path().join("kiln.json"),
+            r#"{"port":9000,"env":{"LOG_LEVEL":"debug"}}"#,
+        )
+        .unwrap();
+        let plan = detect_and_plan(dir.path()).unwrap();
+        assert_eq!(plan.port, Some(9000));
+        assert_eq!(plan.env.get("LOG_LEVEL").map(String::as_str), Some("debug"));
+    }
+
+    #[test]
+    fn unknown_configured_provider_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
+        std::fs::write(dir.path().join("kiln.json"), r#"{"provider":"cobol"}"#).unwrap();
+        assert!(detect_and_plan(dir.path()).is_err());
+    }
 }

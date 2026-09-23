@@ -111,6 +111,7 @@ impl Provider for JavaProvider {
             stages: vec![build_stage, runtime_stage],
             start_command: Some("java -jar app.jar".to_string()),
             port: Some(8080),
+            ..Default::default()
         })
     }
 }

@@ -106,6 +106,7 @@ impl Provider for ElixirProvider {
             stages: vec![build_stage, runtime_stage],
             start_command: Some(start_cmd),
             port: Some(4000),
+            ..Default::default()
         })
     }
 }

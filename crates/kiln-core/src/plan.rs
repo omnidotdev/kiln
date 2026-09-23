@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// A complete build plan for a detected project.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct BuildPlan {
     /// Provider that generated this plan
     pub provider: String,
@@ -11,6 +11,9 @@ pub struct BuildPlan {
     pub start_command: Option<String>,
     /// Detected or inferred port
     pub port: Option<u16>,
+    /// Environment variables to set in the runtime image (from config).
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
 }
 
 /// A single Dockerfile stage.

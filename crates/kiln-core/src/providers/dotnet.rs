@@ -69,6 +69,7 @@ impl Provider for DotnetProvider {
             stages: vec![build_stage, runtime_stage],
             start_command: Some(format!("dotnet {project_name}.dll")),
             port: Some(8080),
+            ..Default::default()
         })
     }
 }

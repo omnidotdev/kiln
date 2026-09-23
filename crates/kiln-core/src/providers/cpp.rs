@@ -116,6 +116,7 @@ impl Provider for CppProvider {
             stages: vec![build_stage, runtime_stage],
             start_command: Some(start_cmd),
             port: Some(8080),
+            ..Default::default()
         })
     }
 }

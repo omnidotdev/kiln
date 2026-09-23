@@ -65,6 +65,35 @@ impl NodeProvider {
         })
     }
 
+    /// Whether package.json lists `name` under dependencies or devDependencies.
+    fn has_dependency(ctx: &AppContext, name: &str) -> bool {
+        ctx.read_file("package.json")
+            .ok()
+            .and_then(|pkg| serde_json::from_str::<serde_json::Value>(&pkg).ok())
+            .is_some_and(|parsed| {
+                ["dependencies", "devDependencies"]
+                    .iter()
+                    .any(|section| parsed.get(section).and_then(|deps| deps.get(name)).is_some())
+            })
+    }
+
+    /// The static output directory to serve for a build-to-static framework
+    /// (Next.js `output: export`, Vite, Astro, or Create React App), if this is
+    /// one. Such a project builds to static assets and is served by a static
+    /// file server rather than a Node process.
+    fn static_output_dir(ctx: &AppContext) -> Option<String> {
+        if Self::is_next_static_export(ctx) {
+            return Some("out".to_string());
+        }
+        if Self::has_dependency(ctx, "vite") || Self::has_dependency(ctx, "astro") {
+            return Some("dist".to_string());
+        }
+        if Self::has_dependency(ctx, "react-scripts") {
+            return Some("build".to_string());
+        }
+        None
+    }
+
     // node_modules from the deps stage, plus the built app (which includes any
     // generated output dir like Next's out/) from the build stage.
     fn runtime_copy_from(has_build: bool) -> Vec<CopyFrom> {
@@ -162,13 +191,15 @@ impl Provider for NodeProvider {
         // An explicit build-command override forces a build stage even when the
         // package.json has no `build` script.
         let has_build = ctx.overrides.build_command.is_some() || Self::has_build_script(ctx);
-        // A Next.js static export builds to out/ and cannot be run with
-        // `next start`; serve the exported files statically instead.
-        let is_static_export = has_build && Self::is_next_static_export(ctx);
+        // A build-to-static framework (Next.js export, Vite, Astro, CRA) emits
+        // static assets that are served by a static file server, not a Node
+        // process; serve the framework's output directory instead.
+        let static_dir = if has_build { Self::static_output_dir(ctx) } else { None };
+        let is_static_export = static_dir.is_some();
         let start_cmd = if let Some(override_cmd) = ctx.overrides.start_command.clone() {
             Some(override_cmd)
-        } else if is_static_export {
-            Some("serve out -l 3000".to_string())
+        } else if let Some(dir) = &static_dir {
+            Some(format!("serve {dir} -l 3000"))
         } else {
             Self::detect_start_command(ctx, &pm)?
         };
@@ -529,6 +560,50 @@ mod tests {
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = NodeProvider.plan(&ctx).unwrap();
         assert_eq!(plan.start_command.as_deref(), Some("serve out -l 3000"));
+    }
+
+    #[test]
+    fn vite_project_serves_dist_statically() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"w","scripts":{"build":"vite build"},"devDependencies":{"vite":"^5"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert_eq!(plan.start_command.as_deref(), Some("serve dist -l 3000"));
+        let runtime = plan.stages.last().unwrap();
+        assert!(runtime.commands.iter().any(|c| c.run.contains("serve")));
+    }
+
+    #[test]
+    fn astro_project_serves_dist_statically() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"w","scripts":{"build":"astro build"},"dependencies":{"astro":"^4"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert_eq!(plan.start_command.as_deref(), Some("serve dist -l 3000"));
+    }
+
+    #[test]
+    fn cra_project_serves_build_statically() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"w","scripts":{"build":"react-scripts build"},"dependencies":{"react-scripts":"5.0.1"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert_eq!(plan.start_command.as_deref(), Some("serve build -l 3000"));
     }
 
     #[test]

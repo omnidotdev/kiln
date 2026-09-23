@@ -33,13 +33,25 @@ static sites, and shell projects. More providers are easy to add.
 
 ## Install
 
-Build from source (requires a recent Rust toolchain):
+| Platform | Channel | Command / Link |
+| --- | --- | --- |
+| All | [GitHub Releases](https://github.com/omnidotdev/kiln/releases) | Download the prebuilt binary for your platform |
+| macOS / Linux | [Homebrew](https://github.com/omnidotdev/homebrew-tap/blob/master/Formula/kiln.rb) | `brew install omnidotdev/tap/kiln` |
+| Arch Linux | [AUR](https://aur.archlinux.org/packages/omnidotdev-kiln) / [AUR (bin)](https://aur.archlinux.org/packages/omnidotdev-kiln-bin) | `paru -S omnidotdev-kiln` or `paru -S omnidotdev-kiln-bin` |
+
+### Build from source
+
+Requires a recent Rust toolchain:
 
 ```bash
 cargo install --path crates/kiln-cli
 ```
 
 This installs the `kiln` binary.
+
+`kiln detect` and `kiln plan` run anywhere; `kiln build` additionally needs a
+reachable [BuildKit](https://github.com/moby/buildkit) daemon (set its address
+with `BUILDKIT_HOST` or `--buildkit-addr`).
 
 ## Usage
 

@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "poetry-fx"
+version = "0.1.0"
+description = "kiln e2e poetry fixture"
+authors = ["Omni <team@omni.dev>"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.11"
+flask = "3.0.3"
+gunicorn = "23.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

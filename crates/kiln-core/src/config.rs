@@ -37,6 +37,14 @@ pub struct KilnConfig {
     pub env: BTreeMap<String, String>,
 }
 
+/// The JSON schema for [`KilnConfig`], pretty-printed. Feeds editor
+/// autocompletion and validation for `kiln.json`.
+#[must_use]
+pub fn schema_json() -> String {
+    let schema = schemars::schema_for!(KilnConfig);
+    serde_json::to_string_pretty(&schema).unwrap_or_default()
+}
+
 impl KilnConfig {
     /// Load configuration from the project root, if present.
     ///

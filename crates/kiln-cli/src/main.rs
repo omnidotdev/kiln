@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 /// Kiln builds container images with automatic language detection
 #[derive(Parser)]
@@ -79,6 +79,29 @@ enum Commands {
         /// Override the runtime start command.
         #[arg(long)]
         start_cmd: Option<String>,
+        /// Force a provider instead of auto-detecting (e.g. node, go, python).
+        #[arg(long)]
+        provider: Option<String>,
+        /// Override the port the application listens on.
+        #[arg(long)]
+        port: Option<u16>,
+        /// Set a runtime environment variable (repeatable): --env KEY=VALUE.
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
+    },
+    /// Print a summary of what Kiln detects for a project
+    Info {
+        /// Path to the project
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Print the JSON schema for kiln.json / kiln.toml
+    Schema,
+    /// Generate a shell completion script
+    Completion {
+        /// Shell to generate completions for (bash, zsh, fish, ...)
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
     },
 }
 
@@ -112,6 +135,9 @@ fn main() {
             install_cmd,
             build_cmd,
             start_cmd,
+            provider,
+            port,
+            env,
         } => cmd_build(
             source.as_deref(),
             git_ref.as_deref(),
@@ -123,13 +149,25 @@ fn main() {
             cache_to.as_deref(),
             registry_insecure,
             kiln_core::BuildOverrides {
+                provider,
                 package_manager,
                 install_command: install_cmd,
                 build_command: build_cmd,
                 start_command: start_cmd,
+                port,
+                env: parse_env(&env),
                 ..Default::default()
             },
         ),
+        Commands::Info { path } => cmd_info(&path),
+        Commands::Schema => {
+            println!("{}", kiln_core::config::schema_json());
+            Ok(())
+        }
+        Commands::Completion { shell } => {
+            clap_complete::generate(shell, &mut Cli::command(), "kiln", &mut std::io::stdout());
+            Ok(())
+        }
     };
 
     if let Err(e) = result {
@@ -162,6 +200,40 @@ fn cmd_plan(path: &std::path::Path, emit: Option<&str>) -> std::result::Result<(
     }
 
     Ok(())
+}
+
+/// Print a human-readable summary of what Kiln detects for a project.
+fn cmd_info(path: &std::path::Path) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let plan = kiln_core::detect_and_plan(path)?;
+    println!("provider:      {}", plan.provider);
+    if let Some(port) = plan.port {
+        println!("port:          {port}");
+    }
+    if let Some(cmd) = &plan.start_command {
+        println!("start command: {cmd}");
+    }
+    println!("stages:");
+    for stage in &plan.stages {
+        println!("  - {} ({})", stage.name, stage.base_image);
+    }
+    if !plan.env.is_empty() {
+        println!("env:");
+        for (key, value) in &plan.env {
+            println!("  {key}={value}");
+        }
+    }
+    Ok(())
+}
+
+/// Parse repeated `--env KEY=VALUE` arguments into a map. Entries without `=`
+/// or with an empty key are skipped.
+fn parse_env(entries: &[String]) -> std::collections::BTreeMap<String, String> {
+    entries
+        .iter()
+        .filter_map(|entry| entry.split_once('='))
+        .filter(|(key, _)| !key.is_empty())
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
 }
 
 #[allow(
@@ -413,6 +485,19 @@ mod tests {
     fn accepts_normal_registry_refs() {
         assert!(validate_registry_ref("ghcr.io/o/app:1.0").is_ok());
         assert!(validate_registry_ref("localhost:5000/app@sha256:abcdef").is_ok());
+    }
+
+    #[test]
+    fn parse_env_splits_on_first_equals_and_skips_invalid() {
+        let map = super::parse_env(&[
+            "A=1".to_string(),
+            "B=x=y".to_string(),
+            "noequals".to_string(),
+            "=novalue".to_string(),
+        ]);
+        assert_eq!(map.get("A").map(String::as_str), Some("1"));
+        assert_eq!(map.get("B").map(String::as_str), Some("x=y"));
+        assert_eq!(map.len(), 2);
     }
 
     #[test]

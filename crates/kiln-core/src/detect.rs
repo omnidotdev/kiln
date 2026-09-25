@@ -505,6 +505,27 @@ mod tests {
     }
 
     #[test]
+    fn single_stage_provider_applies_all_settings_to_its_one_stage() {
+        // Deno is single-stage: build == first == last stage. build_env, secrets,
+        // hooks, and deploy apt (deno's base is Debian) all target that one stage.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("deno.json"), "{}").unwrap();
+        std::fs::write(
+            dir.path().join("kiln.json"),
+            r#"{"build_env":{"DENO_ENV":"prod"},"secrets":["TOKEN"],"deploy_apt_packages":["curl"],"pre_build":["echo hi"]}"#,
+        )
+        .unwrap();
+        let plan = detect_and_plan(dir.path()).unwrap();
+        assert_eq!(plan.stages.len(), 1, "deno is single-stage");
+
+        let df = crate::dockerfile::generate(&plan);
+        assert!(df.contains("--mount=type=secret,id=TOKEN"), "{df}");
+        assert!(df.contains("ENV DENO_ENV=\"prod\""), "{df}");
+        assert!(df.contains("apt-get install -y --no-install-recommends curl"), "{df}");
+        assert!(df.contains("echo hi"), "{df}");
+    }
+
+    #[test]
     fn node_build_env_and_hooks_target_the_build_stage_not_deps() {
         // Node splits deps / build / runtime. build_env (VITE_*) and hooks must
         // land in the `build` stage where `npm run build` runs, not in `deps`.

@@ -81,3 +81,42 @@ pub struct CopyFrom {
     /// Destination path in this stage
     pub dest: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stage(name: &str) -> Stage {
+        Stage {
+            name: name.to_string(),
+            base_image: "img".to_string(),
+            workdir: "/app".to_string(),
+            commands: vec![],
+            copy_files: vec![],
+            copy_from: vec![],
+        }
+    }
+
+    fn plan_with(stage_names: &[&str]) -> BuildPlan {
+        BuildPlan {
+            stages: stage_names.iter().map(|n| stage(n)).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn build_stage_index_prefers_a_named_build_stage() {
+        // Node: deps / build / runtime -> the build stage is index 1
+        assert_eq!(plan_with(&["deps", "build", "runtime"]).build_stage_index(), 1);
+    }
+
+    #[test]
+    fn build_stage_index_falls_back_to_first_stage() {
+        // Two-stage (go/rust: build/runtime) -> index 0 is the build stage
+        assert_eq!(plan_with(&["build", "runtime"]).build_stage_index(), 0);
+        // Single-stage (deno/static) -> the only stage
+        assert_eq!(plan_with(&["runtime"]).build_stage_index(), 0);
+        // Defensive: an empty plan resolves to 0 without panicking
+        assert_eq!(plan_with(&[]).build_stage_index(), 0);
+    }
+}

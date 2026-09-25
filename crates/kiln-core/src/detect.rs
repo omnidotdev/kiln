@@ -300,7 +300,10 @@ fn apply_build_hooks(plan: &mut BuildPlan, pre: &[String], post: &[String]) -> R
         run: command.clone(),
         cache_mounts: Vec::new(),
     };
-    if let Some(stage) = plan.stages.first_mut() {
+    // Target the stage that runs the build command (Node builds in its own stage,
+    // separate from dependency install), so hooks bracket the real build.
+    let index = plan.build_stage_index();
+    if let Some(stage) = plan.stages.get_mut(index) {
         for (offset, command) in pre.iter().enumerate() {
             stage.commands.insert(offset, hook(command));
         }
@@ -498,6 +501,51 @@ mod tests {
             dockerfile.matches("ENV VITE_API=").count(),
             1,
             "build env only in the build stage"
+        );
+    }
+
+    #[test]
+    fn node_build_env_and_hooks_target_the_build_stage_not_deps() {
+        // Node splits deps / build / runtime. build_env (VITE_*) and hooks must
+        // land in the `build` stage where `npm run build` runs, not in `deps`.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"w","scripts":{"build":"vite build"},"devDependencies":{"vite":"^5"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        std::fs::write(
+            dir.path().join("kiln.json"),
+            r#"{"build_env":{"VITE_API":"https://x"},"pre_build":["echo pre"]}"#,
+        )
+        .unwrap();
+        let plan = detect_and_plan(dir.path()).unwrap();
+
+        let build = plan
+            .stages
+            .iter()
+            .find(|s| s.name == "build")
+            .expect("node has a build stage");
+        let deps = plan
+            .stages
+            .iter()
+            .find(|s| s.name == "deps")
+            .expect("node has a deps stage");
+        assert!(
+            build.commands.iter().any(|c| c.run == "echo pre"),
+            "pre_build in build stage"
+        );
+        assert!(
+            !deps.commands.iter().any(|c| c.run == "echo pre"),
+            "pre_build NOT in deps"
+        );
+
+        // and in the emitted Dockerfile, VITE_API precedes `npm run build`
+        let df = crate::dockerfile::generate(&plan);
+        assert!(
+            df.find("ENV VITE_API=").unwrap() < df.find("npm run build").unwrap(),
+            "{df}"
         );
     }
 

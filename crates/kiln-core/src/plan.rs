@@ -25,6 +25,17 @@ pub struct BuildPlan {
     pub secrets: Vec<String>,
 }
 
+impl BuildPlan {
+    /// Index of the stage where the application is built, so build-time settings
+    /// (build env, pre/post hooks) target the right place. That is the stage
+    /// named `build` when a provider has a distinct build step (e.g. Node's
+    /// deps/build/runtime split), otherwise the first stage.
+    #[must_use]
+    pub fn build_stage_index(&self) -> usize {
+        self.stages.iter().position(|stage| stage.name == "build").unwrap_or(0)
+    }
+}
+
 /// A single Dockerfile stage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Stage {

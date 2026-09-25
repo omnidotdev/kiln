@@ -6,16 +6,17 @@ use crate::plan::BuildPlan;
 #[must_use]
 pub fn generate(plan: &BuildPlan) -> String {
     let mut lines = vec![String::from("# syntax=docker/dockerfile:1")];
+    let build_index = plan.build_stage_index();
 
     for (index, stage) in plan.stages.iter().enumerate() {
         lines.push(String::new());
         lines.push(format!("FROM {} AS {}", stage.base_image, stage.name));
         lines.push(format!("WORKDIR {}", stage.workdir));
 
-        // Build-time environment goes on the first (build) stage so its RUN steps
-        // (install, build) see it. Keys/values use the same validation and escape
-        // as runtime env.
-        if index == 0 {
+        // Build-time environment goes on the stage that runs the build command so
+        // its RUN steps see it. Keys/values use the same validation and escape as
+        // runtime env.
+        if index == build_index {
             for (key, value) in plan.build_env.iter().filter(|(k, _)| is_valid_env_key(k)) {
                 lines.push(format!("ENV {key}=\"{}\"", json_escape(value)));
             }

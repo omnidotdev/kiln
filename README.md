@@ -82,7 +82,7 @@ build straight from a Git source with `--source <url> --ref <sha>`.
 
 Kiln is zero-config by default. When detection cannot infer something, drop a
 `kiln.json` (or `kiln.toml`) in the project root to pin it. Every field is
-optional and an explicit CLI flag always wins over the file.
+optional.
 
 ```json
 {
@@ -93,13 +93,39 @@ optional and an explicit CLI flag always wins over the file.
   "build_command": "pnpm build",
   "start_command": "node dist/main.js",
   "port": 8080,
-  "env": { "NODE_ENV": "production" }
+  "env": { "NODE_ENV": "production" },
+
+  "build_apt_packages": ["libpq-dev", "pkg-config"],
+  "deploy_apt_packages": ["ca-certificates"],
+  "build_image": "node:22-bookworm",
+  "runtime_image": "gcr.io/distroless/nodejs22-debian12",
+  "paths": ["/opt/bin"],
+  "secrets": ["NPM_TOKEN"],
+  "pre_build": ["protoc --version"],
+  "post_build": ["node scripts/postbuild.js"]
 }
 ```
 
-The runtime **version** can also come from a version file (`.nvmrc` /
-`.node-version`, the `go` directive in `go.mod`, `.python-version`,
-`.ruby-version`); `version` overrides it. Run `kiln schema` for the full schema.
+- **Versions** also come from ecosystem version files, which `version`
+  overrides: `.nvmrc` / `.node-version`, the `go` directive in `go.mod`,
+  `.python-version`, `.ruby-version`, `rust-toolchain.toml`, and the shared
+  `.tool-versions` (asdf/mise) and mise config (`mise.toml` / `.mise.toml`).
+  Applies to all fourteen providers.
+- **apt packages** install into the build stage (`build_apt_packages`) or the
+  final image (`deploy_apt_packages`).
+- **build_image / runtime_image** swap the base images; **paths** prepend
+  directories to `PATH` in the runtime.
+- **secrets** are `BuildKit` secret ids mounted on build-stage commands (and
+  forwarded to the build), never written into a layer.
+- **pre_build / post_build** run extra commands before and after the provider's
+  own build steps.
+
+**Environment variables.** A platform can set the same options without a config
+file: `KILN_PROVIDER`, `KILN_VERSION`, `KILN_PACKAGE_MANAGER`, `KILN_INSTALL_CMD`,
+`KILN_BUILD_CMD`, `KILN_START_CMD`, `KILN_PORT`, `KILN_BUILD_APT_PACKAGES`,
+`KILN_DEPLOY_APT_PACKAGES`, `KILN_BUILD_IMAGE`, `KILN_RUNTIME_IMAGE`,
+`KILN_PATHS`, and `KILN_SECRETS`. Precedence is **CLI flag > environment
+variable > config file > auto-detection**. Run `kiln schema` for the full schema.
 
 ## How it works
 

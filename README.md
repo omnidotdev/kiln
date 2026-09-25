@@ -1,4 +1,11 @@
-# Kiln
+<div align="center">
+  <img src="/assets/logo.png" width="100" />
+
+  <h1 align="center">Kiln</h1>
+
+[Website](https://kiln.omni.dev) | [Docs](https://docs.omni.dev/products/kiln) | [Feedback](https://backfeed.omni.dev/workspaces/omni/projects/kiln) | [Discord](https://discord.gg/omnidotdev) | [X](https://x.com/omnidotdev) | [Threads](https://www.threads.com/@omnidotdev)
+
+</div>
 
 **Source code, fired into containers.**
 
@@ -133,7 +140,7 @@ variable > config file > auto-detection**. Run `kiln schema` for the full schema
 
 ## How it works
 
-Kiln has two parts:
+Kiln has two crates:
 
 - **`kiln-core`**: language detection, build planning, and Dockerfile
   generation. Each supported language is a self-contained provider.
@@ -144,12 +151,74 @@ Detection inspects a project's files (manifests, lockfiles, entrypoints) to
 identify the language and framework, the provider produces a build plan, and the
 plan is rendered into a multi-stage Dockerfile and built into an image.
 
+## Development
+
+### Prerequisites
+
+- [Rust](https://rustup.rs) (stable, pinned via `rust-toolchain.toml`)
+- [Bun](https://bun.sh) 1.0+
+- A reachable [BuildKit](https://github.com/moby/buildkit) daemon (for `kiln build`)
+
+### Commands
+
+```sh
+cargo build                    # Build the workspace
+cargo run -p kiln-cli -- --help  # Run the CLI
+cargo test                     # Test
+cargo clippy                   # Lint
+cargo fmt                      # Format
+```
+
+### Version Syncing
+
+This project uses a dual-package setup (Rust workspace + npm package) with
+automated version synchronization:
+
+- **Source of truth**: `package.json` holds the canonical version, and is used
+  for Changesets
+- **Sync script**: `scripts/syncVersion.ts` propagates the version to
+  `Cargo.toml`
+- **Changesets**: manages version bumps and changelog generation
+
+The sync script runs automatically during the release process via the `version`
+npm script:
+
+```sh
+bun run version  # changeset version, then sync package.json version → Cargo.toml
+```
+
+### CI/CD
+
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| `test.yml` | Push/PR to `master` | Runs fmt, clippy, and tests |
+| `e2e.yml` | Push/PR to `master`, manual | Builds the end-to-end language fixtures |
+| `sync.yml` | PR to `master` | Validates version sync |
+| `release.yml` | Push to `master`, manual | Creates releases via Changesets and builds multi-platform binaries |
+
+### Release Process
+
+1. Create a changeset: `bun changeset`
+2. Push to `master`
+3. The Changesets action opens a "Version Packages" PR
+4. Merge the PR to trigger a release with binaries for:
+   - `x86_64-unknown-linux-gnu`
+   - `aarch64-unknown-linux-gnu`
+   - `x86_64-apple-darwin`
+   - `aarch64-apple-darwin`
+5. The release updates the [Homebrew tap](https://github.com/omnidotdev/homebrew-tap) formula
+
 ## Contributing
 
 Contributions are welcome, especially new language providers. A provider lives in
 `crates/kiln-core/src/providers/` and implements detection plus build-plan
 generation for one ecosystem.
 
+## Ecosystem
+
+- **[Omni CLI](https://github.com/omnidotdev/cli)**: Agentic CLI for the Omni ecosystem
+- **[Omni Terminal](https://github.com/omnidotdev/terminal)**: GPU-accelerated terminal emulator built to run everywhere
+
 ## License
 
-Licensed under the [Apache License 2.0](./LICENSE.md).
+The code in this repository is licensed under Apache 2.0, &copy; [Omni LLC](https://omni.dev). See [LICENSE.md](LICENSE.md) for more information.

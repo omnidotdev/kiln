@@ -148,6 +148,8 @@ fn main() {
             cache_from.as_deref(),
             cache_to.as_deref(),
             registry_insecure,
+            // CLI flags win, then KILN_* env vars, then (inside core) the config
+            // file, then auto-detection.
             kiln_core::BuildOverrides {
                 provider,
                 package_manager,
@@ -157,7 +159,8 @@ fn main() {
                 port,
                 env: parse_env(&env),
                 ..Default::default()
-            },
+            }
+            .or(kiln_core::BuildOverrides::from_env()),
         ),
         Commands::Info { path } => cmd_info(&path),
         Commands::Schema => {
@@ -188,7 +191,7 @@ fn cmd_detect(path: &std::path::Path) -> std::result::Result<(), Box<dyn std::er
 }
 
 fn cmd_plan(path: &std::path::Path, emit: Option<&str>) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let plan = kiln_core::detect_and_plan(path)?;
+    let plan = kiln_core::detect_and_plan_with(path, kiln_core::BuildOverrides::from_env())?;
 
     match emit {
         Some("dockerfile") => {
@@ -204,7 +207,7 @@ fn cmd_plan(path: &std::path::Path, emit: Option<&str>) -> std::result::Result<(
 
 /// Print a human-readable summary of what Kiln detects for a project.
 fn cmd_info(path: &std::path::Path) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let plan = kiln_core::detect_and_plan(path)?;
+    let plan = kiln_core::detect_and_plan_with(path, kiln_core::BuildOverrides::from_env())?;
     println!("provider:      {}", plan.provider);
     if let Some(port) = plan.port {
         println!("port:          {port}");

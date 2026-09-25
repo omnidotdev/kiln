@@ -32,6 +32,60 @@ pub struct BuildOverrides {
     pub deploy_apt_packages: Vec<String>,
 }
 
+impl BuildOverrides {
+    /// Fill this override's unset fields from `lower`, a lower-precedence source.
+    /// Fields already set on `self` win; `None` scalars and empty collections are
+    /// filled from `lower`. Used to layer CLI flags over environment variables.
+    #[must_use]
+    pub fn or(mut self, lower: Self) -> Self {
+        self.provider = self.provider.or(lower.provider);
+        self.version = self.version.or(lower.version);
+        self.package_manager = self.package_manager.or(lower.package_manager);
+        self.install_command = self.install_command.or(lower.install_command);
+        self.build_command = self.build_command.or(lower.build_command);
+        self.start_command = self.start_command.or(lower.start_command);
+        self.port = self.port.or(lower.port);
+        if self.env.is_empty() {
+            self.env = lower.env;
+        }
+        if self.build_apt_packages.is_empty() {
+            self.build_apt_packages = lower.build_apt_packages;
+        }
+        if self.deploy_apt_packages.is_empty() {
+            self.deploy_apt_packages = lower.deploy_apt_packages;
+        }
+        self
+    }
+
+    /// Build overrides from `KILN_*` variables, reading each name through `get`.
+    /// A missing or blank value leaves the field unset. Package lists are
+    /// whitespace-separated. This is the injectable core of [`Self::from_env`].
+    #[must_use]
+    pub fn from_env_with(get: impl Fn(&str) -> Option<String>) -> Self {
+        let get = |key: &str| get(key).filter(|value| !value.trim().is_empty());
+        let split = |value: String| value.split_whitespace().map(str::to_string).collect::<Vec<_>>();
+        Self {
+            provider: get("KILN_PROVIDER"),
+            version: get("KILN_VERSION"),
+            package_manager: get("KILN_PACKAGE_MANAGER"),
+            install_command: get("KILN_INSTALL_CMD"),
+            build_command: get("KILN_BUILD_CMD"),
+            start_command: get("KILN_START_CMD"),
+            port: get("KILN_PORT").and_then(|value| value.trim().parse().ok()),
+            env: std::collections::BTreeMap::new(),
+            build_apt_packages: get("KILN_BUILD_APT_PACKAGES").map(split).unwrap_or_default(),
+            deploy_apt_packages: get("KILN_DEPLOY_APT_PACKAGES").map(split).unwrap_or_default(),
+        }
+    }
+
+    /// Build overrides from the process's `KILN_*` environment variables, so a
+    /// platform can steer a build without a committed config file.
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self::from_env_with(|key| std::env::var(key).ok())
+    }
+}
+
 /// Context for a project being analyzed.
 #[derive(Debug)]
 pub struct AppContext {
@@ -294,6 +348,56 @@ mod tests {
         let cmds = &plan.stages.first().unwrap().commands;
         assert!(cmds[0].run.contains("apt-get install"));
         assert!(cmds.iter().skip(1).any(|c| c.run.contains("go build")));
+    }
+
+    #[test]
+    fn from_env_parses_all_kiln_vars() {
+        let vars: std::collections::HashMap<&str, &str> = [
+            ("KILN_PROVIDER", "node"),
+            ("KILN_VERSION", "20"),
+            ("KILN_PACKAGE_MANAGER", "pnpm"),
+            ("KILN_INSTALL_CMD", "pnpm install"),
+            ("KILN_BUILD_CMD", "pnpm build"),
+            ("KILN_START_CMD", "node dist/main.js"),
+            ("KILN_PORT", "4000"),
+            ("KILN_BUILD_APT_PACKAGES", "gcc  libpq-dev"),
+            ("KILN_DEPLOY_APT_PACKAGES", "ca-certificates"),
+        ]
+        .into_iter()
+        .collect();
+        let o = BuildOverrides::from_env_with(|k| vars.get(k).map(|s| (*s).to_string()));
+        assert_eq!(o.provider.as_deref(), Some("node"));
+        assert_eq!(o.version.as_deref(), Some("20"));
+        assert_eq!(o.package_manager.as_deref(), Some("pnpm"));
+        assert_eq!(o.install_command.as_deref(), Some("pnpm install"));
+        assert_eq!(o.build_command.as_deref(), Some("pnpm build"));
+        assert_eq!(o.start_command.as_deref(), Some("node dist/main.js"));
+        assert_eq!(o.port, Some(4000));
+        assert_eq!(o.build_apt_packages, vec!["gcc", "libpq-dev"]);
+        assert_eq!(o.deploy_apt_packages, vec!["ca-certificates"]);
+    }
+
+    #[test]
+    fn from_env_treats_blank_as_unset() {
+        let o = BuildOverrides::from_env_with(|k| (k == "KILN_PROVIDER").then(|| "   ".to_string()));
+        assert!(o.provider.is_none());
+        assert!(o.port.is_none());
+    }
+
+    #[test]
+    fn cli_flags_win_over_env() {
+        let cli = BuildOverrides {
+            version: Some("22".to_string()),
+            ..Default::default()
+        };
+        let env = BuildOverrides {
+            version: Some("20".to_string()),
+            provider: Some("node".to_string()),
+            ..Default::default()
+        };
+        let merged = cli.or(env);
+        assert_eq!(merged.version.as_deref(), Some("22"), "CLI version wins");
+        assert_eq!(merged.provider.as_deref(), Some("node"), "env fills the gap");
     }
 
     #[test]

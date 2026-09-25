@@ -35,6 +35,11 @@ pub struct KilnConfig {
     /// Environment variables to set in the runtime image.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Environment variables available during the build (in the build stage),
+    /// for values baked at build time such as a frontend's `VITE_*` /
+    /// `NEXT_PUBLIC_*` variables. Set at runtime with `env` instead.
+    #[serde(default)]
+    pub build_env: BTreeMap<String, String>,
     /// Apt packages to install in the build stage (compilers, headers, and other
     /// build-time system dependencies). Only takes effect on Debian-family build
     /// images (the default for every provider).
@@ -135,6 +140,9 @@ impl KilnConfig {
         if overrides.env.is_empty() {
             overrides.env = self.env;
         }
+        if overrides.build_env.is_empty() {
+            overrides.build_env = self.build_env;
+        }
         if overrides.build_apt_packages.is_empty() {
             overrides.build_apt_packages = self.build_apt_packages;
         }
@@ -196,6 +204,34 @@ mod tests {
         assert_eq!(config.provider.as_deref(), Some("go"));
         assert_eq!(config.version.as_deref(), Some("1.23"));
         assert_eq!(config.start_command.as_deref(), Some("/bin/app"));
+    }
+
+    #[test]
+    fn loads_new_fields_from_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("kiln.toml"),
+            r#"
+build_apt_packages = ["libpq-dev"]
+deploy_apt_packages = ["ca-certificates"]
+runtime_image = "debian:bookworm-slim"
+paths = ["/opt/bin"]
+secrets = ["NPM_TOKEN"]
+pre_build = ["echo hi"]
+
+[build_env]
+VITE_API = "https://x"
+"#,
+        )
+        .unwrap();
+        let config = KilnConfig::load(dir.path()).unwrap().unwrap();
+        assert_eq!(config.build_apt_packages, vec!["libpq-dev"]);
+        assert_eq!(config.deploy_apt_packages, vec!["ca-certificates"]);
+        assert_eq!(config.runtime_image.as_deref(), Some("debian:bookworm-slim"));
+        assert_eq!(config.paths, vec!["/opt/bin"]);
+        assert_eq!(config.secrets, vec!["NPM_TOKEN"]);
+        assert_eq!(config.pre_build, vec!["echo hi"]);
+        assert_eq!(config.build_env.get("VITE_API").map(String::as_str), Some("https://x"));
     }
 
     #[test]

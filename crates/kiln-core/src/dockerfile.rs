@@ -12,6 +12,15 @@ pub fn generate(plan: &BuildPlan) -> String {
         lines.push(format!("FROM {} AS {}", stage.base_image, stage.name));
         lines.push(format!("WORKDIR {}", stage.workdir));
 
+        // Build-time environment goes on the first (build) stage so its RUN steps
+        // (install, build) see it. Keys/values use the same validation and escape
+        // as runtime env.
+        if index == 0 {
+            for (key, value) in plan.build_env.iter().filter(|(k, _)| is_valid_env_key(k)) {
+                lines.push(format!("ENV {key}=\"{}\"", json_escape(value)));
+            }
+        }
+
         for copy in &stage.copy_files {
             lines.push(format!("COPY {} {}", copy.src, copy.dest));
         }

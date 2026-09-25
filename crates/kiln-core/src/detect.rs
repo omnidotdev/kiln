@@ -26,6 +26,8 @@ pub struct BuildOverrides {
     pub port: Option<u16>,
     /// Environment variables to set in the runtime image.
     pub env: std::collections::BTreeMap<String, String>,
+    /// Environment variables available during the build stage.
+    pub build_env: std::collections::BTreeMap<String, String>,
     /// Apt packages to install in the build stage.
     pub build_apt_packages: Vec<String>,
     /// Apt packages to install in the final runtime image.
@@ -59,6 +61,9 @@ impl BuildOverrides {
         self.port = self.port.or(lower.port);
         if self.env.is_empty() {
             self.env = lower.env;
+        }
+        if self.build_env.is_empty() {
+            self.build_env = lower.build_env;
         }
         if self.build_apt_packages.is_empty() {
             self.build_apt_packages = lower.build_apt_packages;
@@ -99,6 +104,7 @@ impl BuildOverrides {
             start_command: get("KILN_START_CMD"),
             port: get("KILN_PORT").and_then(|value| value.trim().parse().ok()),
             env: std::collections::BTreeMap::new(),
+            build_env: std::collections::BTreeMap::new(),
             build_apt_packages: get("KILN_BUILD_APT_PACKAGES").map(split).unwrap_or_default(),
             deploy_apt_packages: get("KILN_DEPLOY_APT_PACKAGES").map(split).unwrap_or_default(),
             runtime_image: get("KILN_RUNTIME_IMAGE"),
@@ -221,6 +227,7 @@ pub fn detect_and_plan_with(root: impl AsRef<Path>, overrides: BuildOverrides) -
     let forced_provider = overrides.provider.clone();
     let port_override = overrides.port;
     let env = overrides.env.clone();
+    let build_env = overrides.build_env.clone();
     let build_apt = overrides.build_apt_packages.clone();
     let deploy_apt = overrides.deploy_apt_packages.clone();
     let runtime_image = overrides.runtime_image.clone();
@@ -254,6 +261,7 @@ pub fn detect_and_plan_with(root: impl AsRef<Path>, overrides: BuildOverrides) -
         plan.port = Some(port);
     }
     plan.env = env;
+    plan.build_env = build_env;
     // Order matters: hooks add the pre/post commands, base-image overrides settle
     // the FINAL base images, then apt runs last so its apt-capability guard sees
     // the real runtime image. apt inserts at the front, landing ahead of any
@@ -461,6 +469,35 @@ mod tests {
         assert!(
             deploy_cmd.contains("apt-get install -y --no-install-recommends ca-certificates"),
             "{deploy_cmd}"
+        );
+    }
+
+    #[test]
+    fn build_env_is_set_in_the_build_stage_before_the_build_runs() {
+        // A frontend bakes VITE_*/NEXT_PUBLIC_* at build time, so build_env must
+        // land in the build stage ahead of the build command, not just at runtime.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
+        std::fs::write(
+            dir.path().join("kiln.json"),
+            r#"{"build_env":{"VITE_API":"https://api.example.com"},"env":{"RUNTIME_ONLY":"1"}}"#,
+        )
+        .unwrap();
+        let plan = detect_and_plan(dir.path()).unwrap();
+        let dockerfile = crate::dockerfile::generate(&plan);
+
+        let env_pos = dockerfile.find("ENV VITE_API=").expect("build env present");
+        let build_pos = dockerfile.find("go build").expect("build command present");
+        assert!(
+            env_pos < build_pos,
+            "build_env must precede the build command:\n{dockerfile}"
+        );
+        // build_env is not leaked into the runtime-only env, and vice versa
+        assert!(dockerfile.contains("ENV RUNTIME_ONLY=\"1\""));
+        assert_eq!(
+            dockerfile.matches("ENV VITE_API=").count(),
+            1,
+            "build env only in the build stage"
         );
     }
 

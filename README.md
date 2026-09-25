@@ -94,6 +94,7 @@ optional.
   "start_command": "node dist/main.js",
   "port": 8080,
   "env": { "NODE_ENV": "production" },
+  "build_env": { "VITE_API_URL": "https://api.example.com" },
 
   "build_apt_packages": ["libpq-dev", "pkg-config"],
   "deploy_apt_packages": ["ca-certificates"],
@@ -111,8 +112,11 @@ optional.
   `.python-version`, `.ruby-version`, `rust-toolchain.toml`, and the shared
   `.tool-versions` (asdf/mise) and mise config (`mise.toml` / `.mise.toml`).
   Applies to all fourteen providers.
+- **env / build_env** set environment variables in the runtime image and in the
+  build stage respectively; use `build_env` for values a frontend bakes at build
+  time (`VITE_*`, `NEXT_PUBLIC_*`).
 - **apt packages** install into the build stage (`build_apt_packages`) or the
-  final image (`deploy_apt_packages`).
+  final image (`deploy_apt_packages`, which requires a Debian-family runtime).
 - **build_image / runtime_image** swap the base images; **paths** prepend
   directories to `PATH` in the runtime.
 - **secrets** are `BuildKit` secret ids mounted on build-stage commands (and

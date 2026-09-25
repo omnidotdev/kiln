@@ -14,6 +14,9 @@ pub struct BuildPlan {
     /// Environment variables to set in the runtime image (from config).
     #[serde(default)]
     pub env: std::collections::BTreeMap<String, String>,
+    /// Environment variables set in the build stage (from config).
+    #[serde(default)]
+    pub build_env: std::collections::BTreeMap<String, String>,
     /// Directories to prepend to `PATH` in the runtime image (from config).
     #[serde(default)]
     pub paths: Vec<String>,

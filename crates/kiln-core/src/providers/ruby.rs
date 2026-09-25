@@ -22,13 +22,12 @@ impl Provider for RubyProvider {
 
     fn plan(&self, ctx: &AppContext) -> Result<BuildPlan> {
         let is_rails = Self::is_rails(ctx);
-        let version =
-            crate::providers::resolve_version(
-                ctx,
-                crate::providers::version_from_file(ctx, ".ruby-version")
-                    .or_else(|| crate::providers::version_from_tool_files(ctx, &["ruby"])),
-                "3.3",
-            )?;
+        let version = crate::providers::resolve_version(
+            ctx,
+            crate::providers::version_from_file(ctx, ".ruby-version")
+                .or_else(|| crate::providers::version_from_tool_files(ctx, &["ruby"])),
+            "3.3",
+        )?;
 
         let deps_stage = Stage {
             name: "deps".to_string(),

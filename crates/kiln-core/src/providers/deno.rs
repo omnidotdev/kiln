@@ -35,7 +35,14 @@ impl Provider for DenoProvider {
 
         let stage = Stage {
             name: "runtime".to_string(),
-            base_image: "denoland/deno:2.5.3".to_string(),
+            base_image: format!(
+                "denoland/deno:{}",
+                crate::providers::resolve_version(
+                    ctx,
+                    crate::providers::version_from_tool_files(ctx, &["deno"]),
+                    "2.5.3"
+                )?
+            ),
             workdir: "/app".to_string(),
             copy_files: vec![CopyDirective {
                 src: ".".to_string(),
@@ -101,5 +108,21 @@ mod tests {
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = DenoProvider.plan(&ctx).unwrap();
         assert_eq!(plan.start_command.as_deref(), Some("deno run --allow-net main.ts"));
+    }
+
+    #[test]
+    fn deno_version_pins_image() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("deno.json"), "{}").unwrap();
+        let ctx = AppContext::with_overrides(
+            dir.path(),
+            crate::BuildOverrides {
+                version: Some("2.1.4".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let plan = DenoProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "denoland/deno:2.1.4"));
     }
 }

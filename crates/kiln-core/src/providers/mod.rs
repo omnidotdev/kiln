@@ -88,7 +88,9 @@ pub(crate) fn version_from_tool_versions(ctx: &AppContext, aliases: &[&str]) -> 
 pub(crate) fn version_from_mise(ctx: &AppContext, aliases: &[&str]) -> Option<String> {
     for path in [".mise.toml", "mise.toml", ".config/mise/config.toml"] {
         let Ok(content) = ctx.read_file(path) else { continue };
-        let Ok(doc) = content.parse::<toml::Table>() else { continue };
+        let Ok(doc) = content.parse::<toml::Table>() else {
+            continue;
+        };
         let Some(tools) = doc.get("tools").and_then(toml::Value::as_table) else {
             continue;
         };
@@ -130,7 +132,6 @@ pub trait Provider: Send + Sync {
     /// Returns an error if plan generation fails.
     fn plan(&self, ctx: &AppContext) -> Result<BuildPlan>;
 }
-
 
 /// Return all registered providers in priority order.
 ///
@@ -176,7 +177,10 @@ mod version_file_tests {
     #[test]
     fn reads_tool_versions_by_alias() {
         let (_d, ctx) = ctx_with(&[(".tool-versions", "nodejs 20.11.0\npython 3.12.1\n")]);
-        assert_eq!(version_from_tool_versions(&ctx, &["node", "nodejs"]).as_deref(), Some("20.11.0"));
+        assert_eq!(
+            version_from_tool_versions(&ctx, &["node", "nodejs"]).as_deref(),
+            Some("20.11.0")
+        );
         assert_eq!(version_from_tool_versions(&ctx, &["python"]).as_deref(), Some("3.12.1"));
         assert_eq!(version_from_tool_versions(&ctx, &["ruby"]), None);
     }
@@ -184,7 +188,10 @@ mod version_file_tests {
     #[test]
     fn tool_versions_ignores_comments_and_blank_lines() {
         let (_d, ctx) = ctx_with(&[(".tool-versions", "# a comment\n\n  golang 1.23.4  \n")]);
-        assert_eq!(version_from_tool_versions(&ctx, &["go", "golang"]).as_deref(), Some("1.23.4"));
+        assert_eq!(
+            version_from_tool_versions(&ctx, &["go", "golang"]).as_deref(),
+            Some("1.23.4")
+        );
     }
 
     #[test]
@@ -213,7 +220,13 @@ mod version_file_tests {
 
     #[test]
     fn tool_files_prefers_tool_versions_over_mise() {
-        let (_d, ctx) = ctx_with(&[(".tool-versions", "nodejs 18.19.0\n"), ("mise.toml", "[tools]\nnode = \"22\"\n")]);
-        assert_eq!(version_from_tool_files(&ctx, &["node", "nodejs"]).as_deref(), Some("18.19.0"));
+        let (_d, ctx) = ctx_with(&[
+            (".tool-versions", "nodejs 18.19.0\n"),
+            ("mise.toml", "[tools]\nnode = \"22\"\n"),
+        ]);
+        assert_eq!(
+            version_from_tool_files(&ctx, &["node", "nodejs"]).as_deref(),
+            Some("18.19.0")
+        );
     }
 }

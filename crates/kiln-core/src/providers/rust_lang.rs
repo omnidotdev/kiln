@@ -31,7 +31,10 @@ impl RustProvider {
     fn version_from_toolchain(ctx: &AppContext) -> Option<String> {
         if let Ok(content) = ctx.read_file("rust-toolchain.toml") {
             if let Ok(doc) = content.parse::<toml::Table>() {
-                if let Some(channel) = doc.get("toolchain").and_then(|t| t.get("channel")).and_then(toml::Value::as_str)
+                if let Some(channel) = doc
+                    .get("toolchain")
+                    .and_then(|t| t.get("channel"))
+                    .and_then(toml::Value::as_str)
                 {
                     return crate::providers::normalize_version(channel);
                 }
@@ -56,8 +59,8 @@ impl Provider for RustProvider {
     fn plan(&self, ctx: &AppContext) -> Result<BuildPlan> {
         let binary = Self::binary_name(ctx);
         crate::sanitize::validate_token("Cargo.toml package name", &binary)?;
-        let detected = Self::version_from_toolchain(ctx)
-            .or_else(|| crate::providers::version_from_tool_files(ctx, &["rust"]));
+        let detected =
+            Self::version_from_toolchain(ctx).or_else(|| crate::providers::version_from_tool_files(ctx, &["rust"]));
         let version = crate::providers::resolve_version(ctx, detected, "1.85")?;
         let build_image = format!("rust:{version}");
 
@@ -153,7 +156,11 @@ mod tests {
             "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
         )
         .unwrap();
-        std::fs::write(dir.path().join("rust-toolchain.toml"), "[toolchain]\nchannel = \"1.81\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("rust-toolchain.toml"),
+            "[toolchain]\nchannel = \"1.81\"\n",
+        )
+        .unwrap();
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = RustProvider.plan(&ctx).unwrap();
         assert!(plan.stages.iter().any(|s| s.base_image == "rust:1.81"));
@@ -167,7 +174,11 @@ mod tests {
             "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
         )
         .unwrap();
-        std::fs::write(dir.path().join("rust-toolchain.toml"), "[toolchain]\nchannel = \"stable\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("rust-toolchain.toml"),
+            "[toolchain]\nchannel = \"stable\"\n",
+        )
+        .unwrap();
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = RustProvider.plan(&ctx).unwrap();
         assert!(plan.stages.iter().any(|s| s.base_image == "rust:1.85"));

@@ -52,7 +52,14 @@ impl Provider for ElixirProvider {
 
         let build_stage = Stage {
             name: "build".to_string(),
-            base_image: "elixir:1.18".to_string(),
+            base_image: format!(
+                "elixir:{}",
+                crate::providers::resolve_version(
+                    ctx,
+                    crate::providers::version_from_tool_files(ctx, &["elixir"]),
+                    "1.18"
+                )?
+            ),
             workdir: "/app".to_string(),
             copy_files: vec![CopyDirective {
                 src: ".".to_string(),
@@ -194,5 +201,25 @@ mod tests {
             plan.start_command.as_deref(),
             Some("PHX_SERVER=true ELIXIR_ERL_OPTIONS=+fnu /app/bin/web start")
         );
+    }
+
+    #[test]
+    fn elixir_version_pins_build_image() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mix.exs"),
+            "defmodule M do\n  def project, do: [app: :myapp]\nend",
+        )
+        .unwrap();
+        let ctx = AppContext::with_overrides(
+            dir.path(),
+            crate::BuildOverrides {
+                version: Some("1.17".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let plan = ElixirProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "elixir:1.17"));
     }
 }

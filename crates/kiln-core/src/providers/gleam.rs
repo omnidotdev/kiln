@@ -14,12 +14,17 @@ impl Provider for GleamProvider {
         ctx.has_file("gleam.toml")
     }
 
-    fn plan(&self, _ctx: &AppContext) -> Result<BuildPlan> {
+    fn plan(&self, ctx: &AppContext) -> Result<BuildPlan> {
+        let version = crate::providers::resolve_version(
+            ctx,
+            crate::providers::version_from_tool_files(ctx, &["gleam"]),
+            "1.15.0",
+        )?;
         let build_stage = Stage {
             name: "build".to_string(),
             // Image tags use the full patch version; `v1.7-erlang` does not
             // exist and failed with "not found".
-            base_image: "ghcr.io/gleam-lang/gleam:v1.15.0-erlang".to_string(),
+            base_image: format!("ghcr.io/gleam-lang/gleam:v{version}-erlang"),
             workdir: "/app".to_string(),
             copy_files: vec![CopyDirective {
                 src: ".".to_string(),
@@ -84,5 +89,25 @@ mod tests {
         // erlang:28-slim has no `gleam`; the shipment's entrypoint.sh boots it.
         assert_eq!(plan.start_command.as_deref(), Some("/app/entrypoint.sh run"));
         assert_eq!(plan.port, Some(8080));
+    }
+
+    #[test]
+    fn gleam_version_pins_build_image() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("gleam.toml"), "name = \"myapp\"").unwrap();
+        let ctx = AppContext::with_overrides(
+            dir.path(),
+            crate::BuildOverrides {
+                version: Some("1.16.0".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let plan = GleamProvider.plan(&ctx).unwrap();
+        assert!(
+            plan.stages
+                .iter()
+                .any(|s| s.base_image == "ghcr.io/gleam-lang/gleam:v1.16.0-erlang")
+        );
     }
 }

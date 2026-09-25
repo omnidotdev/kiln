@@ -11,10 +11,10 @@ enum BuildTool {
 }
 
 impl BuildTool {
-    const fn build_image(&self) -> &'static str {
+    fn build_image(&self, jdk: &str) -> String {
         match self {
-            Self::Maven => "maven:3-eclipse-temurin-21",
-            Self::Gradle => "gradle:8-jdk21",
+            Self::Maven => format!("maven:3-eclipse-temurin-{jdk}"),
+            Self::Gradle => format!("gradle:8-jdk{jdk}"),
         }
     }
 
@@ -63,10 +63,14 @@ impl Provider for JavaProvider {
 
     fn plan(&self, ctx: &AppContext) -> Result<BuildPlan> {
         let tool = Self::detect_build_tool(ctx).unwrap_or(BuildTool::Maven);
+        // Java version pins the JDK major (e.g. `21`, `17`); the same value feeds
+        // the build image and the JRE runtime image so they never drift.
+        let jdk =
+            crate::providers::resolve_version(ctx, crate::providers::version_from_tool_files(ctx, &["java"]), "21")?;
 
         let build_stage = Stage {
             name: "build".to_string(),
-            base_image: tool.build_image().to_string(),
+            base_image: tool.build_image(&jdk),
             workdir: "/app".to_string(),
             copy_files: vec![CopyDirective {
                 src: ".".to_string(),
@@ -95,7 +99,7 @@ impl Provider for JavaProvider {
 
         let runtime_stage = Stage {
             name: "runtime".to_string(),
-            base_image: "eclipse-temurin:21-jre".to_string(),
+            base_image: format!("eclipse-temurin:{jdk}-jre"),
             workdir: "/app".to_string(),
             copy_files: vec![],
             copy_from: vec![CopyFrom {
@@ -166,6 +170,33 @@ mod tests {
                 .cache_mounts
                 .contains(&"/root/.gradle".to_string())
         );
+    }
+
+    #[test]
+    fn java_version_pins_jdk_across_build_and_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pom.xml"), "<project/>").unwrap();
+        let ctx = AppContext::with_overrides(
+            dir.path(),
+            crate::BuildOverrides {
+                version: Some("17".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let plan = JavaProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "maven:3-eclipse-temurin-17"));
+        assert!(plan.stages.iter().any(|s| s.base_image == "eclipse-temurin:17-jre"));
+    }
+
+    #[test]
+    fn java_tool_versions_pins_jdk() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("build.gradle"), "").unwrap();
+        std::fs::write(dir.path().join(".tool-versions"), "java 21\n").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = JavaProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "gradle:8-jdk21"));
     }
 
     #[test]

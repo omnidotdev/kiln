@@ -45,6 +45,15 @@ pub fn generate(plan: &BuildPlan) -> String {
         }
     }
 
+    // Prepend configured directories to PATH in the final image. Entries are
+    // validated tokens (no shell metacharacters or `:`), so joining them with
+    // `:` and appending the base image's `$PATH` is injection-safe; Docker
+    // expands `$PATH` from the runtime base at build time.
+    if !plan.paths.is_empty() {
+        lines.push(String::new());
+        lines.push(format!("ENV PATH=\"{}:$PATH\"", plan.paths.join(":")));
+    }
+
     // Expose port if set
     if let Some(port) = plan.port {
         lines.push(String::new());

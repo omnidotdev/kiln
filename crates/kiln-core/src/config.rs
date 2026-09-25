@@ -45,6 +45,14 @@ pub struct KilnConfig {
     /// which has no package manager.
     #[serde(default)]
     pub deploy_apt_packages: Vec<String>,
+    /// Override the base image of the final runtime stage (e.g. to swap in a
+    /// hardened or mirrored image).
+    pub runtime_image: Option<String>,
+    /// Override the base image of the first build stage.
+    pub build_image: Option<String>,
+    /// Directories to prepend to `PATH` in the runtime image.
+    #[serde(default)]
+    pub paths: Vec<String>,
 }
 
 /// The JSON schema for [`KilnConfig`], pretty-printed. Feeds editor
@@ -116,6 +124,11 @@ impl KilnConfig {
         }
         if overrides.deploy_apt_packages.is_empty() {
             overrides.deploy_apt_packages = self.deploy_apt_packages;
+        }
+        overrides.runtime_image = overrides.runtime_image.or(self.runtime_image);
+        overrides.build_image = overrides.build_image.or(self.build_image);
+        if overrides.paths.is_empty() {
+            overrides.paths = self.paths;
         }
         overrides
     }

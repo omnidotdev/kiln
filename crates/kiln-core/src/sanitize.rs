@@ -69,9 +69,58 @@ pub fn validate_apt_package(value: &str) -> Result<()> {
     }
 }
 
+/// Whether `c` is safe in a container image reference. Allows the registry,
+/// repository, tag, and digest characters (`registry.io:5000/ns/img:tag@sha256:...`)
+/// while excluding whitespace and every shell metacharacter.
+const fn is_image_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '_' | ':' | '@' | '+')
+}
+
+/// Validate a user-supplied base image reference before it reaches a `FROM`
+/// line.
+///
+/// Rejects an empty value, a leading `-`, a `..` sequence, and any character
+/// outside [`is_image_char`], so a configured base image cannot inject a second
+/// stage or a build command.
+///
+/// # Errors
+///
+/// Returns [`Error::UnsafeValue`] when `value` falls outside the whitelist.
+pub fn validate_image_ref(value: &str) -> Result<()> {
+    let safe =
+        !value.is_empty() && !value.starts_with('-') && !value.contains("..") && value.chars().all(is_image_char);
+    if safe {
+        Ok(())
+    } else {
+        Err(Error::UnsafeValue {
+            field: "base image",
+            value: value.to_string(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepts_real_image_refs() {
+        for value in [
+            "node:22-slim",
+            "gcr.io/distroless/static-debian12",
+            "registry.example.com:5000/team/app:1.2.3",
+            "ubuntu@sha256:abc123",
+        ] {
+            assert!(validate_image_ref(value).is_ok(), "{value} should be allowed");
+        }
+    }
+
+    #[test]
+    fn rejects_dangerous_image_refs() {
+        for value in ["", "-x", "a b", "img\nRUN x", "img; rm -rf /", "a$(id)"] {
+            assert!(validate_image_ref(value).is_err(), "{value:?} must be rejected");
+        }
+    }
 
     #[test]
     fn accepts_real_apt_packages() {

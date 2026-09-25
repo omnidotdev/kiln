@@ -53,6 +53,11 @@ pub struct KilnConfig {
     /// Directories to prepend to `PATH` in the runtime image.
     #[serde(default)]
     pub paths: Vec<String>,
+    /// `BuildKit` secret ids to expose to build-stage commands (e.g. a private
+    /// registry token). The value is supplied at build time and never written
+    /// into an image layer. Each id is mounted at `/run/secrets/<id>`.
+    #[serde(default)]
+    pub secrets: Vec<String>,
 }
 
 /// The JSON schema for [`KilnConfig`], pretty-printed. Feeds editor
@@ -129,6 +134,9 @@ impl KilnConfig {
         overrides.build_image = overrides.build_image.or(self.build_image);
         if overrides.paths.is_empty() {
             overrides.paths = self.paths;
+        }
+        if overrides.secrets.is_empty() {
+            overrides.secrets = self.secrets;
         }
         overrides
     }

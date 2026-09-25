@@ -17,6 +17,9 @@ pub struct BuildPlan {
     /// Directories to prepend to `PATH` in the runtime image (from config).
     #[serde(default)]
     pub paths: Vec<String>,
+    /// `BuildKit` secret ids mounted on build-stage commands (from config).
+    #[serde(default)]
+    pub secrets: Vec<String>,
 }
 
 /// A single Dockerfile stage.

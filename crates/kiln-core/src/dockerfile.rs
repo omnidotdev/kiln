@@ -7,7 +7,7 @@ use crate::plan::BuildPlan;
 pub fn generate(plan: &BuildPlan) -> String {
     let mut lines = vec![String::from("# syntax=docker/dockerfile:1")];
 
-    for stage in &plan.stages {
+    for (index, stage) in plan.stages.iter().enumerate() {
         lines.push(String::new());
         lines.push(format!("FROM {} AS {}", stage.base_image, stage.name));
         lines.push(format!("WORKDIR {}", stage.workdir));
@@ -20,15 +20,28 @@ pub fn generate(plan: &BuildPlan) -> String {
             lines.push(format!("COPY --from={} {} {}", copy.stage, copy.src, copy.dest));
         }
 
+        // Secrets are supplied at build time and mounted (never copied into a
+        // layer). They belong to build-time commands, so expose them on the
+        // first stage's RUN steps. Ids are validated, so interpolation is safe.
+        let secret_mounts: Vec<String> = if index == 0 {
+            plan.secrets
+                .iter()
+                .map(|id| format!("--mount=type=secret,id={id}"))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         for cmd in &stage.commands {
-            if cmd.cache_mounts.is_empty() {
+            let mut mounts = secret_mounts.clone();
+            mounts.extend(
+                cmd.cache_mounts
+                    .iter()
+                    .map(|m| format!("--mount=type=cache,target={m}")),
+            );
+            if mounts.is_empty() {
                 lines.push(format!("RUN {}", cmd.run));
             } else {
-                let mounts: Vec<String> = cmd
-                    .cache_mounts
-                    .iter()
-                    .map(|m| format!("--mount=type=cache,target={m}"))
-                    .collect();
                 lines.push(format!("RUN {} {}", mounts.join(" "), cmd.run));
             }
         }

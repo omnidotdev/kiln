@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 /// Kiln builds container images with automatic language detection
 #[derive(Parser)]
@@ -79,6 +79,29 @@ enum Commands {
         /// Override the runtime start command.
         #[arg(long)]
         start_cmd: Option<String>,
+        /// Force a provider instead of auto-detecting (e.g. node, go, python).
+        #[arg(long)]
+        provider: Option<String>,
+        /// Override the port the application listens on.
+        #[arg(long)]
+        port: Option<u16>,
+        /// Set a runtime environment variable (repeatable): --env KEY=VALUE.
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
+    },
+    /// Print a summary of what Kiln detects for a project
+    Info {
+        /// Path to the project
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Print the JSON schema for kiln.json / kiln.toml
+    Schema,
+    /// Generate a shell completion script
+    Completion {
+        /// Shell to generate completions for (bash, zsh, fish, ...)
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
     },
 }
 
@@ -112,6 +135,9 @@ fn main() {
             install_cmd,
             build_cmd,
             start_cmd,
+            provider,
+            port,
+            env,
         } => cmd_build(
             source.as_deref(),
             git_ref.as_deref(),
@@ -122,13 +148,29 @@ fn main() {
             cache_from.as_deref(),
             cache_to.as_deref(),
             registry_insecure,
+            // CLI flags win, then KILN_* env vars, then (inside core) the config
+            // file, then auto-detection.
             kiln_core::BuildOverrides {
+                provider,
                 package_manager,
                 install_command: install_cmd,
                 build_command: build_cmd,
                 start_command: start_cmd,
-            },
+                port,
+                env: parse_env(&env),
+                ..Default::default()
+            }
+            .or(kiln_core::BuildOverrides::from_env()),
         ),
+        Commands::Info { path } => cmd_info(&path),
+        Commands::Schema => {
+            println!("{}", kiln_core::config::schema_json());
+            Ok(())
+        }
+        Commands::Completion { shell } => {
+            clap_complete::generate(shell, &mut Cli::command(), "kiln", &mut std::io::stdout());
+            Ok(())
+        }
     };
 
     if let Err(e) = result {
@@ -149,7 +191,7 @@ fn cmd_detect(path: &std::path::Path) -> std::result::Result<(), Box<dyn std::er
 }
 
 fn cmd_plan(path: &std::path::Path, emit: Option<&str>) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let plan = kiln_core::detect_and_plan(path)?;
+    let plan = kiln_core::detect_and_plan_with(path, kiln_core::BuildOverrides::from_env())?;
 
     match emit {
         Some("dockerfile") => {
@@ -161,6 +203,40 @@ fn cmd_plan(path: &std::path::Path, emit: Option<&str>) -> std::result::Result<(
     }
 
     Ok(())
+}
+
+/// Print a human-readable summary of what Kiln detects for a project.
+fn cmd_info(path: &std::path::Path) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let plan = kiln_core::detect_and_plan_with(path, kiln_core::BuildOverrides::from_env())?;
+    println!("provider:      {}", plan.provider);
+    if let Some(port) = plan.port {
+        println!("port:          {port}");
+    }
+    if let Some(cmd) = &plan.start_command {
+        println!("start command: {cmd}");
+    }
+    println!("stages:");
+    for stage in &plan.stages {
+        println!("  - {} ({})", stage.name, stage.base_image);
+    }
+    if !plan.env.is_empty() {
+        println!("env:");
+        for (key, value) in &plan.env {
+            println!("  {key}={value}");
+        }
+    }
+    Ok(())
+}
+
+/// Parse repeated `--env KEY=VALUE` arguments into a map. Entries without `=`
+/// or with an empty key are skipped.
+fn parse_env(entries: &[String]) -> std::collections::BTreeMap<String, String> {
+    entries
+        .iter()
+        .filter_map(|entry| entry.split_once('='))
+        .filter(|(key, _)| !key.is_empty())
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
 }
 
 #[allow(
@@ -239,13 +315,14 @@ fn cmd_build(
         path.to_path_buf()
     };
 
-    // Generate or use provided Dockerfile
-    let dockerfile_content = if let Some(df) = dockerfile {
-        std::fs::read_to_string(df)?
+    // Generate or use provided Dockerfile. An explicit Dockerfile carries its
+    // own secret mounts, so kiln forwards secrets only for a generated plan.
+    let (dockerfile_content, secrets) = if let Some(df) = dockerfile {
+        (std::fs::read_to_string(df)?, Vec::new())
     } else {
         let plan = kiln_core::detect_and_plan_with(&work_dir, overrides)?;
         tracing::info!(provider = plan.provider, "detected language, generating Dockerfile");
-        kiln_core::dockerfile::generate(&plan)
+        (kiln_core::dockerfile::generate(&plan), plan.secrets.clone())
     };
 
     // Write generated Dockerfile to work dir
@@ -254,7 +331,15 @@ fn cmd_build(
 
     // Build with buildctl
     tracing::info!(dest, "building image");
-    let args = build_buildctl_args(buildkit_addr, &work_dir, dest, cache_from, cache_to, registry_insecure);
+    let args = build_buildctl_args(
+        buildkit_addr,
+        &work_dir,
+        dest,
+        cache_from,
+        cache_to,
+        registry_insecure,
+        &secrets,
+    );
     let status = std::process::Command::new("buildctl").args(&args).status()?;
 
     if !status.success() {
@@ -275,6 +360,7 @@ fn build_buildctl_args(
     cache_from: Option<&str>,
     cache_to: Option<&str>,
     registry_insecure: bool,
+    secrets: &[String],
 ) -> Vec<String> {
     let insecure_suffix = if registry_insecure {
         ",registry.insecure=true"
@@ -311,6 +397,14 @@ fn build_buildctl_args(
         args.push(format!(
             "type=registry,ref={cache_ref},mode=max,push=true{insecure_suffix}"
         ));
+    }
+
+    // Forward each configured secret to buildkit, sourced from the like-named
+    // environment variable in this process. The value is mounted into the build
+    // (see the Dockerfile `--mount=type=secret`) and never lands in a layer.
+    for id in secrets {
+        args.push("--secret".to_string());
+        args.push(format!("id={id},env={id}"));
     }
 
     args.push("--output".to_string());
@@ -415,6 +509,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_env_splits_on_first_equals_and_skips_invalid() {
+        let map = super::parse_env(&[
+            "A=1".to_string(),
+            "B=x=y".to_string(),
+            "noequals".to_string(),
+            "=novalue".to_string(),
+        ]);
+        assert_eq!(map.get("A").map(String::as_str), Some("1"));
+        assert_eq!(map.get("B").map(String::as_str), Some("x=y"));
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
     fn omits_cache_flags_when_unset() {
         let args = build_buildctl_args(
             "tcp://127.0.0.1:1234",
@@ -423,6 +530,7 @@ mod tests {
             None,
             None,
             false,
+            &[],
         );
         assert!(args.iter().all(|a| a != "--import-cache"));
         assert!(args.iter().all(|a| a != "--export-cache"));
@@ -444,6 +552,7 @@ mod tests {
             Some("localhost:5000/app:buildcache"),
             Some("localhost:5000/app:buildcache"),
             true,
+            &[],
         );
 
         let import_idx = args
@@ -480,6 +589,7 @@ mod tests {
             Some("ghcr.io/owner/app:buildcache"),
             Some("ghcr.io/owner/app:buildcache"),
             false,
+            &[],
         );
 
         let import_idx = args.iter().position(|a| a == "--import-cache").unwrap();
@@ -487,5 +597,21 @@ mod tests {
 
         let output_idx = args.iter().position(|a| a == "--output").unwrap();
         assert_eq!(args[output_idx + 1], "type=image,name=ghcr.io/owner/app:abc,push=true",);
+    }
+
+    #[test]
+    fn forwards_secrets_to_buildctl() {
+        let args = build_buildctl_args(
+            "tcp://127.0.0.1:1234",
+            Path::new("/workspace"),
+            "ghcr.io/owner/app:abc",
+            None,
+            None,
+            false,
+            &["NPM_TOKEN".to_string(), "GH_TOKEN".to_string()],
+        );
+        let secret_idx = args.iter().position(|a| a == "--secret").expect("--secret present");
+        assert_eq!(args[secret_idx + 1], "id=NPM_TOKEN,env=NPM_TOKEN");
+        assert!(args.iter().any(|a| a == "id=GH_TOKEN,env=GH_TOKEN"));
     }
 }

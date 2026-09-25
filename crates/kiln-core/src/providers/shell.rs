@@ -43,6 +43,7 @@ impl Provider for ShellProvider {
             stages: vec![stage],
             start_command: Some(format!("bash {entry}")),
             port: None,
+            ..Default::default()
         })
     }
 }

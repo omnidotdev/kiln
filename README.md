@@ -59,17 +59,77 @@ with `BUILDKIT_HOST` or `--buildkit-addr`).
 # Detect the language of a project
 kiln detect --path ./my-app
 
+# Summarize what Kiln detects (provider, base images, start command, port)
+kiln info --path ./my-app
+
 # Generate a build plan as JSON (what Kiln would do, without building)
 kiln plan --path ./my-app
 
 # Build a container image (requires a reachable BuildKit daemon; set its
 # address with BUILDKIT_HOST or --buildkit-addr)
 kiln build --path ./my-app --dest registry.example/my-app:latest
+
+# Emit the config-file JSON schema, or a shell completion script
+kiln schema
+kiln completion zsh
 ```
 
 `kiln plan` is a good way to see exactly what Kiln intends to do before it runs,
 and the generated Dockerfile is yours to keep and edit. `kiln build` can also
 build straight from a Git source with `--source <url> --ref <sha>`.
+
+## Configuration
+
+Kiln is zero-config by default. When detection cannot infer something, drop a
+`kiln.json` (or `kiln.toml`) in the project root to pin it. Every field is
+optional.
+
+```json
+{
+  "provider": "node",
+  "version": "22",
+  "package_manager": "pnpm",
+  "install_command": "pnpm install --prod",
+  "build_command": "pnpm build",
+  "start_command": "node dist/main.js",
+  "port": 8080,
+  "env": { "NODE_ENV": "production" },
+  "build_env": { "VITE_API_URL": "https://api.example.com" },
+
+  "build_apt_packages": ["libpq-dev", "pkg-config"],
+  "deploy_apt_packages": ["ca-certificates"],
+  "build_image": "node:22-bookworm",
+  "runtime_image": "gcr.io/distroless/nodejs22-debian12",
+  "paths": ["/opt/bin"],
+  "secrets": ["NPM_TOKEN"],
+  "pre_build": ["protoc --version"],
+  "post_build": ["node scripts/postbuild.js"]
+}
+```
+
+- **Versions** also come from ecosystem version files, which `version`
+  overrides: `.nvmrc` / `.node-version`, the `go` directive in `go.mod`,
+  `.python-version`, `.ruby-version`, `rust-toolchain.toml`, and the shared
+  `.tool-versions` (asdf/mise) and mise config (`mise.toml` / `.mise.toml`).
+  Applies to all fourteen providers.
+- **env / build_env** set environment variables in the runtime image and in the
+  build stage respectively; use `build_env` for values a frontend bakes at build
+  time (`VITE_*`, `NEXT_PUBLIC_*`).
+- **apt packages** install into the build stage (`build_apt_packages`) or the
+  final image (`deploy_apt_packages`, which requires a Debian-family runtime).
+- **build_image / runtime_image** swap the base images; **paths** prepend
+  directories to `PATH` in the runtime.
+- **secrets** are `BuildKit` secret ids mounted on build-stage commands (and
+  forwarded to the build), never written into a layer.
+- **pre_build / post_build** run extra commands before and after the provider's
+  own build steps.
+
+**Environment variables.** A platform can set the same options without a config
+file: `KILN_PROVIDER`, `KILN_VERSION`, `KILN_PACKAGE_MANAGER`, `KILN_INSTALL_CMD`,
+`KILN_BUILD_CMD`, `KILN_START_CMD`, `KILN_PORT`, `KILN_BUILD_APT_PACKAGES`,
+`KILN_DEPLOY_APT_PACKAGES`, `KILN_BUILD_IMAGE`, `KILN_RUNTIME_IMAGE`,
+`KILN_PATHS`, and `KILN_SECRETS`. Precedence is **CLI flag > environment
+variable > config file > auto-detection**. Run `kiln schema` for the full schema.
 
 ## How it works
 

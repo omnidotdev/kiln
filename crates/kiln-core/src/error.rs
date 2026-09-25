@@ -15,6 +15,9 @@ pub enum Error {
     #[error("{0}")]
     Provider(String),
 
+    #[error("invalid build configuration: {0}")]
+    Config(String),
+
     #[error("unsafe {field} value detected in project metadata: {value:?}")]
     UnsafeValue { field: &'static str, value: String },
 }

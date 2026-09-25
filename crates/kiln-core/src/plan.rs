@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// A complete build plan for a detected project.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct BuildPlan {
     /// Provider that generated this plan
     pub provider: String,
@@ -11,6 +11,29 @@ pub struct BuildPlan {
     pub start_command: Option<String>,
     /// Detected or inferred port
     pub port: Option<u16>,
+    /// Environment variables to set in the runtime image (from config).
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+    /// Environment variables set in the build stage (from config).
+    #[serde(default)]
+    pub build_env: std::collections::BTreeMap<String, String>,
+    /// Directories to prepend to `PATH` in the runtime image (from config).
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// `BuildKit` secret ids mounted on build-stage commands (from config).
+    #[serde(default)]
+    pub secrets: Vec<String>,
+}
+
+impl BuildPlan {
+    /// Index of the stage where the application is built, so build-time settings
+    /// (build env, pre/post hooks) target the right place. That is the stage
+    /// named `build` when a provider has a distinct build step (e.g. Node's
+    /// deps/build/runtime split), otherwise the first stage.
+    #[must_use]
+    pub fn build_stage_index(&self) -> usize {
+        self.stages.iter().position(|stage| stage.name == "build").unwrap_or(0)
+    }
 }
 
 /// A single Dockerfile stage.

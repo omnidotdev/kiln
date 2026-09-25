@@ -65,6 +65,84 @@ impl NodeProvider {
         })
     }
 
+    /// Whether package.json lists `name` under dependencies or devDependencies.
+    fn has_dependency(ctx: &AppContext, name: &str) -> bool {
+        ctx.read_file("package.json")
+            .ok()
+            .and_then(|pkg| serde_json::from_str::<serde_json::Value>(&pkg).ok())
+            .is_some_and(|parsed| {
+                ["dependencies", "devDependencies"]
+                    .iter()
+                    .any(|section| parsed.get(section).and_then(|deps| deps.get(name)).is_some())
+            })
+    }
+
+    /// The major version of a dependency from its package.json version spec
+    /// (e.g. `^17.1.0` -> 17), ignoring range prefixes. `None` if absent or
+    /// not a plain numeric spec (`workspace:*`, `next`, a git URL).
+    fn dependency_major(ctx: &AppContext, name: &str) -> Option<u32> {
+        let pkg = ctx.read_file("package.json").ok()?;
+        let parsed: serde_json::Value = serde_json::from_str(&pkg).ok()?;
+        let spec = ["dependencies", "devDependencies"].iter().find_map(|section| {
+            parsed
+                .get(section)
+                .and_then(|deps| deps.get(name))
+                .and_then(|v| v.as_str())
+        })?;
+        let digits: String = spec
+            .trim_start_matches(['^', '~', '>', '=', 'v', ' '])
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        digits.parse().ok()
+    }
+
+    /// The static output directory for an Angular app, read from `angular.json`'s
+    /// build `outputPath`. Angular 17+ nests the browser bundle under a `browser`
+    /// subdirectory, so that is appended for those versions. `None` if the file
+    /// or field is missing, so a non-standard setup falls back to a Node runtime.
+    fn angular_output_dir(ctx: &AppContext) -> Option<String> {
+        let content = ctx.read_file("angular.json").ok()?;
+        let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+        let projects = json.get("projects")?.as_object()?;
+        let out = projects.values().find_map(|p| {
+            p.pointer("/architect/build/options/outputPath")
+                .and_then(|v| v.as_str())
+        })?;
+        crate::sanitize::validate_token("angular outputPath", out).ok()?;
+        if Self::dependency_major(ctx, "@angular/core").is_some_and(|major| major >= 17) {
+            Some(format!("{out}/browser"))
+        } else {
+            Some(out.to_string())
+        }
+    }
+
+    /// The static output directory to serve for a build-to-static framework
+    /// (Next.js `output: export`, Vite, Astro, Create React App, `SvelteKit` with
+    /// the static adapter, or Angular), if this is one. Such a project builds to
+    /// static assets and is served by a static file server rather than a Node
+    /// process.
+    fn static_output_dir(ctx: &AppContext) -> Option<String> {
+        if Self::is_next_static_export(ctx) {
+            return Some("out".to_string());
+        }
+        if Self::has_dependency(ctx, "vite") || Self::has_dependency(ctx, "astro") {
+            return Some("dist".to_string());
+        }
+        if Self::has_dependency(ctx, "react-scripts") {
+            return Some("build".to_string());
+        }
+        // SvelteKit with the static adapter prerenders the whole app to `build/`;
+        // without it, SvelteKit is a Node server and is not served statically.
+        if Self::has_dependency(ctx, "@sveltejs/adapter-static") {
+            return Some("build".to_string());
+        }
+        if Self::has_dependency(ctx, "@angular/core") {
+            return Self::angular_output_dir(ctx);
+        }
+        None
+    }
+
     // node_modules from the deps stage, plus the built app (which includes any
     // generated output dir like Next's out/) from the build stage.
     fn runtime_copy_from(has_build: bool) -> Vec<CopyFrom> {
@@ -162,19 +240,27 @@ impl Provider for NodeProvider {
         // An explicit build-command override forces a build stage even when the
         // package.json has no `build` script.
         let has_build = ctx.overrides.build_command.is_some() || Self::has_build_script(ctx);
-        // A Next.js static export builds to out/ and cannot be run with
-        // `next start`; serve the exported files statically instead.
-        let is_static_export = has_build && Self::is_next_static_export(ctx);
+        // A build-to-static framework (Next.js export, Vite, Astro, CRA) emits
+        // static assets that are served by a static file server, not a Node
+        // process; serve the framework's output directory instead.
+        let static_dir = if has_build { Self::static_output_dir(ctx) } else { None };
+        let is_static_export = static_dir.is_some();
         let start_cmd = if let Some(override_cmd) = ctx.overrides.start_command.clone() {
             Some(override_cmd)
-        } else if is_static_export {
-            Some("serve out -l 3000".to_string())
+        } else if let Some(dir) = &static_dir {
+            Some(format!("serve {dir} -l 3000"))
         } else {
             Self::detect_start_command(ctx, &pm)?
         };
 
-        let base_image = "node:22-slim".to_string();
-        let build_image = "node:22".to_string();
+        // Runtime version: `version` override, else `.nvmrc`/`.node-version`,
+        // else the current default. Slim runtime, full image for the build.
+        let detected = crate::providers::version_from_file(ctx, ".nvmrc")
+            .or_else(|| crate::providers::version_from_file(ctx, ".node-version"))
+            .or_else(|| crate::providers::version_from_tool_files(ctx, &["node", "nodejs"]));
+        let version = crate::providers::resolve_version(ctx, detected, "22")?;
+        let base_image = format!("node:{version}-slim");
+        let build_image = format!("node:{version}");
 
         // `npm ci` / `--frozen-lockfile` hard-fail without a committed lockfile
         // (e.g. a repo that never committed one, so detection fell back to npm,
@@ -248,6 +334,7 @@ impl Provider for NodeProvider {
             stages,
             start_command: start_cmd,
             port: Some(3000),
+            ..Default::default()
         })
     }
 }
@@ -402,6 +489,62 @@ mod tests {
     }
 
     #[test]
+    fn version_override_changes_node_base_image() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_node_project(dir.path(), "npm");
+        let ctx = AppContext::with_overrides(
+            dir.path(),
+            crate::BuildOverrides {
+                version: Some("20".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "node:20"), "build image");
+        assert!(
+            plan.stages.iter().any(|s| s.base_image == "node:20-slim"),
+            "runtime image"
+        );
+    }
+
+    #[test]
+    fn nvmrc_sets_node_version() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_node_project(dir.path(), "npm");
+        std::fs::write(dir.path().join(".nvmrc"), "18\n").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "node:18-slim"));
+    }
+
+    #[test]
+    fn tool_versions_sets_node_version() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_node_project(dir.path(), "npm");
+        std::fs::write(dir.path().join(".tool-versions"), "nodejs 21.6.2\n").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "node:21.6.2-slim"));
+    }
+
+    #[test]
+    fn mise_toml_sets_node_version_and_nvmrc_wins_over_it() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_node_project(dir.path(), "npm");
+        std::fs::write(dir.path().join("mise.toml"), "[tools]\nnode = \"20\"\n").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "node:20-slim"));
+
+        // a language-native file (.nvmrc) outranks the generic mise config
+        std::fs::write(dir.path().join(".nvmrc"), "18\n").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "node:18-slim"));
+    }
+
+    #[test]
     fn detects_npm() {
         let dir = tempfile::tempdir().unwrap();
         setup_node_project(dir.path(), "npm");
@@ -493,6 +636,103 @@ mod tests {
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = NodeProvider.plan(&ctx).unwrap();
         assert_eq!(plan.start_command.as_deref(), Some("serve out -l 3000"));
+    }
+
+    #[test]
+    fn vite_project_serves_dist_statically() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"w","scripts":{"build":"vite build"},"devDependencies":{"vite":"^5"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert_eq!(plan.start_command.as_deref(), Some("serve dist -l 3000"));
+        let runtime = plan.stages.last().unwrap();
+        assert!(runtime.commands.iter().any(|c| c.run.contains("serve")));
+    }
+
+    #[test]
+    fn astro_project_serves_dist_statically() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"w","scripts":{"build":"astro build"},"dependencies":{"astro":"^4"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert_eq!(plan.start_command.as_deref(), Some("serve dist -l 3000"));
+    }
+
+    #[test]
+    fn cra_project_serves_build_statically() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"w","scripts":{"build":"react-scripts build"},"dependencies":{"react-scripts":"5.0.1"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert_eq!(plan.start_command.as_deref(), Some("serve build -l 3000"));
+    }
+
+    #[test]
+    fn sveltekit_static_adapter_serves_build_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"w","scripts":{"build":"vite build"},"devDependencies":{"@sveltejs/kit":"^2","@sveltejs/adapter-static":"^3"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert_eq!(plan.start_command.as_deref(), Some("serve build -l 3000"));
+    }
+
+    #[test]
+    fn angular_v17_serves_output_browser_subdir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"w","scripts":{"build":"ng build"},"dependencies":{"@angular/core":"^17.1.0"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("angular.json"),
+            r#"{"projects":{"w":{"architect":{"build":{"options":{"outputPath":"dist/w"}}}}}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        // Angular 17+ writes the browser bundle under <outputPath>/browser
+        assert_eq!(plan.start_command.as_deref(), Some("serve dist/w/browser -l 3000"));
+    }
+
+    #[test]
+    fn angular_pre_v17_serves_output_path_directly() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"w","scripts":{"build":"ng build"},"dependencies":{"@angular/core":"^15.2.0"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("angular.json"),
+            r#"{"projects":{"w":{"architect":{"build":{"options":{"outputPath":"dist/w"}}}}}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert_eq!(plan.start_command.as_deref(), Some("serve dist/w -l 3000"));
     }
 
     #[test]
@@ -600,6 +840,7 @@ mod tests {
                 install_command: None,
                 build_command: None,
                 start_command: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -628,6 +869,7 @@ mod tests {
                 install_command: Some("pnpm install --prod".to_string()),
                 build_command: Some("pnpm turbo build".to_string()),
                 start_command: Some("node dist/main.js".to_string()),
+                ..Default::default()
             },
         )
         .unwrap();

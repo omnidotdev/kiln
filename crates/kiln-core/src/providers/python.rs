@@ -89,8 +89,17 @@ impl Provider for PythonProvider {
         let framework = Self::detect_framework(ctx);
         let entry = Self::detect_entry_file(ctx);
 
-        let base_image = "python:3.13-slim".to_string();
-        let build_image = "python:3.13".to_string();
+        // Runtime version: `version` override, else `.python-version`, else the
+        // default. The site-packages path tracks the interpreter's major.minor.
+        let version = crate::providers::resolve_version(
+            ctx,
+            crate::providers::version_from_file(ctx, ".python-version")
+                .or_else(|| crate::providers::version_from_tool_files(ctx, &["python"])),
+            "3.13",
+        )?;
+        let base_image = format!("python:{version}-slim");
+        let build_image = format!("python:{version}");
+        let site_packages = format!("/usr/local/lib/python{}/site-packages", major_minor(&version));
 
         let (copy_files, install_cmd, cache_dirs) = pm.install_info();
         let deps_stage = Stage {
@@ -116,8 +125,8 @@ impl Provider for PythonProvider {
             copy_from: vec![
                 CopyFrom {
                     stage: "deps".to_string(),
-                    src: SITE_PACKAGES.to_string(),
-                    dest: SITE_PACKAGES.to_string(),
+                    src: site_packages.clone(),
+                    dest: site_packages,
                 },
                 // Console-script entrypoints (gunicorn, uvicorn, ...) install to
                 // /usr/local/bin, not site-packages; without this the framework
@@ -138,6 +147,7 @@ impl Provider for PythonProvider {
             stages: vec![deps_stage, runtime_stage],
             start_command: start_cmd,
             port: Some(8000),
+            ..Default::default()
         })
     }
 }
@@ -233,10 +243,17 @@ impl PythonPm {
     }
 }
 
-/// Where installed dependencies land in the deps stage. Every manager is
-/// configured to install into the interpreter's system site-packages, so the
-/// runtime stage copies one uniform path.
-const SITE_PACKAGES: &str = "/usr/local/lib/python3.13/site-packages";
+/// The `major.minor` of a Python version, which names the interpreter's
+/// site-packages directory (`/usr/local/lib/python<major.minor>/site-packages`).
+/// A bare major or a full `major.minor.patch` both collapse to `major.minor`.
+fn major_minor(version: &str) -> String {
+    let mut parts = version.split('.');
+    match (parts.next(), parts.next()) {
+        (Some(major), Some(minor)) => format!("{major}.{minor}"),
+        (Some(major), None) => major.to_string(),
+        _ => version.to_string(),
+    }
+}
 
 enum PythonFramework {
     Django,
@@ -247,6 +264,35 @@ enum PythonFramework {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SITE_PACKAGES: &str = "/usr/local/lib/python3.13/site-packages";
+
+    #[test]
+    fn version_override_changes_images_and_site_packages() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("requirements.txt"), "flask").unwrap();
+        let ctx = AppContext::with_overrides(
+            dir.path(),
+            crate::BuildOverrides {
+                version: Some("3.12".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let plan = PythonProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "python:3.12-slim"));
+        assert_eq!(
+            plan.stages[1].copy_from[0].src,
+            "/usr/local/lib/python3.12/site-packages"
+        );
+    }
+
+    #[test]
+    fn major_minor_collapses_patch_and_bare_major() {
+        assert_eq!(major_minor("3.13"), "3.13");
+        assert_eq!(major_minor("3.12.1"), "3.12");
+        assert_eq!(major_minor("3"), "3");
+    }
 
     #[test]
     fn detects_requirements_txt() {

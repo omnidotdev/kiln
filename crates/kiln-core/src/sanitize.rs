@@ -40,9 +40,146 @@ pub fn validate_token(field: &'static str, value: &str) -> Result<()> {
     }
 }
 
+/// Whether `c` is safe in an apt package specifier. A superset of
+/// [`is_safe_char`] that also allows the characters real package names and
+/// version/architecture qualifiers use (`g++`, `libstdc++6`, `pkg=1.2-3`,
+/// `pkg:arm64`), while still excluding whitespace and every shell metacharacter.
+const fn is_apt_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.' | '_' | ':' | '=' | '~')
+}
+
+/// Validate a user-supplied apt package name before it reaches an install line.
+///
+/// Rejects an empty value, a leading `-` (parsed as a flag), a `..` sequence,
+/// and any character outside [`is_apt_char`], so a configured package list
+/// carries no injection payload.
+///
+/// # Errors
+///
+/// Returns [`Error::UnsafeValue`] when `value` falls outside the whitelist.
+pub fn validate_apt_package(value: &str) -> Result<()> {
+    let safe = !value.is_empty() && !value.starts_with('-') && !value.contains("..") && value.chars().all(is_apt_char);
+    if safe {
+        Ok(())
+    } else {
+        Err(Error::UnsafeValue {
+            field: "apt package",
+            value: value.to_string(),
+        })
+    }
+}
+
+/// Whether `c` is safe in a container image reference. Allows the registry,
+/// repository, tag, and digest characters (`registry.io:5000/ns/img:tag@sha256:...`)
+/// while excluding whitespace and every shell metacharacter.
+const fn is_image_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '_' | ':' | '@' | '+')
+}
+
+/// Validate a user-supplied base image reference before it reaches a `FROM`
+/// line.
+///
+/// Rejects an empty value, a leading `-`, a `..` sequence, and any character
+/// outside [`is_image_char`], so a configured base image cannot inject a second
+/// stage or a build command.
+///
+/// # Errors
+///
+/// Returns [`Error::UnsafeValue`] when `value` falls outside the whitelist.
+pub fn validate_image_ref(value: &str) -> Result<()> {
+    let safe =
+        !value.is_empty() && !value.starts_with('-') && !value.contains("..") && value.chars().all(is_image_char);
+    if safe {
+        Ok(())
+    } else {
+        Err(Error::UnsafeValue {
+            field: "base image",
+            value: value.to_string(),
+        })
+    }
+}
+
+/// Validate a `BuildKit` secret id before it reaches a `--mount=type=secret`
+/// directive and the `buildctl --secret` argument.
+///
+/// Allows the identifier characters a secret id uses (letters, digits, `_`,
+/// `-`, `.`) and rejects everything else, so an id cannot inject mount options
+/// or extra buildctl arguments.
+///
+/// # Errors
+///
+/// Returns [`Error::UnsafeValue`] when `value` falls outside the whitelist.
+pub fn validate_secret_id(value: &str) -> Result<()> {
+    let ok = !value.is_empty()
+        && !value.starts_with('-')
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::UnsafeValue {
+            field: "secret id",
+            value: value.to_string(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepts_and_rejects_secret_ids() {
+        for value in ["NPM_TOKEN", "gh-token", "aws.creds", "SECRET_1"] {
+            assert!(validate_secret_id(value).is_ok(), "{value} should be allowed");
+        }
+        for value in ["", "-x", "a b", "a,src=/etc/passwd", "a$(id)", "a/b"] {
+            assert!(validate_secret_id(value).is_err(), "{value:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn accepts_real_image_refs() {
+        for value in [
+            "node:22-slim",
+            "gcr.io/distroless/static-debian12",
+            "registry.example.com:5000/team/app:1.2.3",
+            "ubuntu@sha256:abc123",
+        ] {
+            assert!(validate_image_ref(value).is_ok(), "{value} should be allowed");
+        }
+    }
+
+    #[test]
+    fn rejects_dangerous_image_refs() {
+        for value in ["", "-x", "a b", "img\nRUN x", "img; rm -rf /", "a$(id)"] {
+            assert!(validate_image_ref(value).is_err(), "{value:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn accepts_real_apt_packages() {
+        for value in [
+            "ffmpeg",
+            "libpq-dev",
+            "g++",
+            "libstdc++6",
+            "curl",
+            "postgresql-client-16",
+            "python3:arm64",
+            "nginx=1.24.0-1",
+        ] {
+            assert!(validate_apt_package(value).is_ok(), "{value} should be allowed");
+        }
+    }
+
+    #[test]
+    fn rejects_dangerous_apt_packages() {
+        for value in ["", "-rf", "a b", "a;rm -rf /", "a|b", "a$(id)", "a\nRUN x", "../x"] {
+            assert!(validate_apt_package(value).is_err(), "{value:?} must be rejected");
+        }
+    }
 
     #[test]
     fn accepts_real_binary_names_and_entrypoints() {

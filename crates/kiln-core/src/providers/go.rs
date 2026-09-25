@@ -19,6 +19,14 @@ impl GoProvider {
             .and_then(|m| m.rsplit('/').next().map(String::from))
             .unwrap_or_else(|| "app".to_string())
     }
+
+    /// The Go version from the `go` directive in go.mod, if present.
+    fn detect_version(ctx: &AppContext) -> Option<String> {
+        let content = ctx.read_file("go.mod").ok()?;
+        content
+            .lines()
+            .find_map(|l| l.strip_prefix("go ").map(|v| v.trim().to_string()))
+    }
 }
 
 impl Provider for GoProvider {
@@ -33,6 +41,10 @@ impl Provider for GoProvider {
     fn plan(&self, ctx: &AppContext) -> Result<BuildPlan> {
         let binary = Self::binary_name(ctx);
         crate::sanitize::validate_token("go.mod module name", &binary)?;
+        let detected =
+            Self::detect_version(ctx).or_else(|| crate::providers::version_from_tool_files(ctx, &["go", "golang"]));
+        let version = crate::providers::resolve_version(ctx, detected, "1.24")?;
+        let build_image = format!("golang:{version}");
 
         // Single build stage. A separate deps stage cannot work here: kiln's
         // Stage does all COPYs before all RUNs, so it can't do the `COPY go.mod;
@@ -44,7 +56,7 @@ impl Provider for GoProvider {
         // for the runtime stage to copy.
         let build_stage = Stage {
             name: "build".to_string(),
-            base_image: "golang:1.24".to_string(),
+            base_image: build_image,
             workdir: "/app".to_string(),
             copy_files: vec![CopyDirective {
                 src: ".".to_string(),
@@ -75,6 +87,7 @@ impl Provider for GoProvider {
             stages: vec![build_stage, runtime_stage],
             start_command: Some(format!("/bin/{binary}")),
             port: Some(8080),
+            ..Default::default()
         })
     }
 }
@@ -92,6 +105,15 @@ mod tests {
             GoProvider.plan(&ctx).is_err(),
             "shell metachars in go module must be rejected"
         );
+    }
+
+    #[test]
+    fn go_version_from_gomod_directive() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n\ngo 1.22\n").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = GoProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "golang:1.22"));
     }
 
     #[test]

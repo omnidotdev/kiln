@@ -35,10 +35,12 @@ impl Provider for DotnetProvider {
     fn plan(&self, ctx: &AppContext) -> Result<BuildPlan> {
         let project_name = Self::find_project_name(ctx);
         crate::sanitize::validate_token(".NET project name", &project_name)?;
+        let version =
+            crate::providers::resolve_version(ctx, crate::providers::version_from_tool_files(ctx, &["dotnet"]), "9.0")?;
 
         let build_stage = Stage {
             name: "build".to_string(),
-            base_image: "mcr.microsoft.com/dotnet/sdk:9.0".to_string(),
+            base_image: format!("mcr.microsoft.com/dotnet/sdk:{version}"),
             workdir: "/app".to_string(),
             copy_files: vec![CopyDirective {
                 src: ".".to_string(),
@@ -53,7 +55,7 @@ impl Provider for DotnetProvider {
 
         let runtime_stage = Stage {
             name: "runtime".to_string(),
-            base_image: "mcr.microsoft.com/dotnet/aspnet:9.0".to_string(),
+            base_image: format!("mcr.microsoft.com/dotnet/aspnet:{version}"),
             workdir: "/app".to_string(),
             copy_files: vec![],
             copy_from: vec![CopyFrom {
@@ -69,6 +71,7 @@ impl Provider for DotnetProvider {
             stages: vec![build_stage, runtime_stage],
             start_command: Some(format!("dotnet {project_name}.dll")),
             port: Some(8080),
+            ..Default::default()
         })
     }
 }
@@ -114,5 +117,30 @@ mod tests {
         assert_eq!(plan.stages.len(), 2);
         assert_eq!(plan.start_command.as_deref(), Some("dotnet WebApi.dll"));
         assert_eq!(plan.port, Some(8080));
+    }
+
+    #[test]
+    fn dotnet_version_pins_sdk_and_aspnet() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("WebApi.csproj"), "<Project/>").unwrap();
+        let ctx = AppContext::with_overrides(
+            dir.path(),
+            crate::BuildOverrides {
+                version: Some("8.0".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let plan = DotnetProvider.plan(&ctx).unwrap();
+        assert!(
+            plan.stages
+                .iter()
+                .any(|s| s.base_image == "mcr.microsoft.com/dotnet/sdk:8.0")
+        );
+        assert!(
+            plan.stages
+                .iter()
+                .any(|s| s.base_image == "mcr.microsoft.com/dotnet/aspnet:8.0")
+        );
     }
 }

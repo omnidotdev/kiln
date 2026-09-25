@@ -22,10 +22,16 @@ impl Provider for RubyProvider {
 
     fn plan(&self, ctx: &AppContext) -> Result<BuildPlan> {
         let is_rails = Self::is_rails(ctx);
+        let version = crate::providers::resolve_version(
+            ctx,
+            crate::providers::version_from_file(ctx, ".ruby-version")
+                .or_else(|| crate::providers::version_from_tool_files(ctx, &["ruby"])),
+            "3.3",
+        )?;
 
         let deps_stage = Stage {
             name: "deps".to_string(),
-            base_image: "ruby:3.3".to_string(),
+            base_image: format!("ruby:{version}"),
             workdir: "/app".to_string(),
             // Gemfile.lock is a glob so a project without a committed lockfile
             // still builds; Gemfile guarantees a match.
@@ -46,7 +52,7 @@ impl Provider for RubyProvider {
 
         let runtime_stage = Stage {
             name: "runtime".to_string(),
-            base_image: "ruby:3.3-slim".to_string(),
+            base_image: format!("ruby:{version}-slim"),
             workdir: "/app".to_string(),
             copy_files: vec![CopyDirective {
                 src: ".".to_string(),
@@ -71,6 +77,7 @@ impl Provider for RubyProvider {
             stages: vec![deps_stage, runtime_stage],
             start_command: Some(start_cmd.to_string()),
             port: Some(3000),
+            ..Default::default()
         })
     }
 }
@@ -78,6 +85,17 @@ impl Provider for RubyProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ruby_version_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Gemfile"), "source 'https://rubygems.org'\n").unwrap();
+        std::fs::write(dir.path().join(".ruby-version"), "3.2\n").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = RubyProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "ruby:3.2"));
+        assert!(plan.stages.iter().any(|s| s.base_image == "ruby:3.2-slim"));
+    }
 
     #[test]
     fn detects_ruby_project() {

@@ -26,6 +26,8 @@ impl Provider for PhpProvider {
     #[allow(clippy::literal_string_with_formatting_args)]
     fn plan(&self, ctx: &AppContext) -> Result<BuildPlan> {
         let is_laravel = Self::is_laravel(ctx);
+        let version =
+            crate::providers::resolve_version(ctx, crate::providers::version_from_tool_files(ctx, &["php"]), "8.3")?;
 
         let deps_stage = Stage {
             name: "deps".to_string(),
@@ -46,7 +48,7 @@ impl Provider for PhpProvider {
 
         let runtime_stage = Stage {
             name: "runtime".to_string(),
-            base_image: "php:8.3-apache".to_string(),
+            base_image: format!("php:{version}-apache"),
             workdir: "/var/www/html".to_string(),
             copy_files: vec![CopyDirective {
                 src: ".".to_string(),
@@ -78,6 +80,7 @@ impl Provider for PhpProvider {
             stages: vec![deps_stage, runtime_stage],
             start_command: start_cmd,
             port: Some(port),
+            ..Default::default()
         })
     }
 }
@@ -125,5 +128,21 @@ mod tests {
         assert!(plan.start_command.as_ref().unwrap().contains("artisan"));
         // artisan serve binds 8080
         assert_eq!(plan.port, Some(8080));
+    }
+
+    #[test]
+    fn php_version_pins_runtime_image() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("composer.json"), "{}").unwrap();
+        let ctx = AppContext::with_overrides(
+            dir.path(),
+            crate::BuildOverrides {
+                version: Some("8.2".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let plan = PhpProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "php:8.2-apache"));
     }
 }

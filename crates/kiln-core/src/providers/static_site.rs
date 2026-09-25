@@ -32,6 +32,7 @@ impl Provider for StaticSiteProvider {
             stages: vec![stage],
             start_command: None,
             port: Some(80),
+            ..Default::default()
         })
     }
 }

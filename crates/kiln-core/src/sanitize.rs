@@ -40,9 +40,61 @@ pub fn validate_token(field: &'static str, value: &str) -> Result<()> {
     }
 }
 
+/// Whether `c` is safe in an apt package specifier. A superset of
+/// [`is_safe_char`] that also allows the characters real package names and
+/// version/architecture qualifiers use (`g++`, `libstdc++6`, `pkg=1.2-3`,
+/// `pkg:arm64`), while still excluding whitespace and every shell metacharacter.
+const fn is_apt_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.' | '_' | ':' | '=' | '~')
+}
+
+/// Validate a user-supplied apt package name before it reaches an install line.
+///
+/// Rejects an empty value, a leading `-` (parsed as a flag), a `..` sequence,
+/// and any character outside [`is_apt_char`], so a configured package list
+/// carries no injection payload.
+///
+/// # Errors
+///
+/// Returns [`Error::UnsafeValue`] when `value` falls outside the whitelist.
+pub fn validate_apt_package(value: &str) -> Result<()> {
+    let safe = !value.is_empty() && !value.starts_with('-') && !value.contains("..") && value.chars().all(is_apt_char);
+    if safe {
+        Ok(())
+    } else {
+        Err(Error::UnsafeValue {
+            field: "apt package",
+            value: value.to_string(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepts_real_apt_packages() {
+        for value in [
+            "ffmpeg",
+            "libpq-dev",
+            "g++",
+            "libstdc++6",
+            "curl",
+            "postgresql-client-16",
+            "python3:arm64",
+            "nginx=1.24.0-1",
+        ] {
+            assert!(validate_apt_package(value).is_ok(), "{value} should be allowed");
+        }
+    }
+
+    #[test]
+    fn rejects_dangerous_apt_packages() {
+        for value in ["", "-rf", "a b", "a;rm -rf /", "a|b", "a$(id)", "a\nRUN x", "../x"] {
+            assert!(validate_apt_package(value).is_err(), "{value:?} must be rejected");
+        }
+    }
 
     #[test]
     fn accepts_real_binary_names_and_entrypoints() {

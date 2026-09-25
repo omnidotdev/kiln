@@ -35,6 +35,16 @@ pub struct KilnConfig {
     /// Environment variables to set in the runtime image.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Apt packages to install in the build stage (compilers, headers, and other
+    /// build-time system dependencies). Only takes effect on Debian-family build
+    /// images (the default for every provider).
+    #[serde(default)]
+    pub build_apt_packages: Vec<String>,
+    /// Apt packages to install in the final runtime image (shared libraries and
+    /// other runtime system dependencies). Has no effect on a distroless runtime,
+    /// which has no package manager.
+    #[serde(default)]
+    pub deploy_apt_packages: Vec<String>,
 }
 
 /// The JSON schema for [`KilnConfig`], pretty-printed. Feeds editor
@@ -100,6 +110,12 @@ impl KilnConfig {
         overrides.port = overrides.port.or(self.port);
         if overrides.env.is_empty() {
             overrides.env = self.env;
+        }
+        if overrides.build_apt_packages.is_empty() {
+            overrides.build_apt_packages = self.build_apt_packages;
+        }
+        if overrides.deploy_apt_packages.is_empty() {
+            overrides.deploy_apt_packages = self.deploy_apt_packages;
         }
         overrides
     }

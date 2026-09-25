@@ -93,7 +93,8 @@ impl Provider for PythonProvider {
         // default. The site-packages path tracks the interpreter's major.minor.
         let version = crate::providers::resolve_version(
             ctx,
-            crate::providers::version_from_file(ctx, ".python-version"),
+            crate::providers::version_from_file(ctx, ".python-version")
+                .or_else(|| crate::providers::version_from_tool_files(ctx, &["python"])),
             "3.13",
         )?;
         let base_image = format!("python:{version}-slim");

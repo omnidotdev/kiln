@@ -41,7 +41,9 @@ impl Provider for GoProvider {
     fn plan(&self, ctx: &AppContext) -> Result<BuildPlan> {
         let binary = Self::binary_name(ctx);
         crate::sanitize::validate_token("go.mod module name", &binary)?;
-        let version = crate::providers::resolve_version(ctx, Self::detect_version(ctx), "1.24")?;
+        let detected =
+            Self::detect_version(ctx).or_else(|| crate::providers::version_from_tool_files(ctx, &["go", "golang"]));
+        let version = crate::providers::resolve_version(ctx, detected, "1.24")?;
         let build_image = format!("golang:{version}");
 
         // Single build stage. A separate deps stage cannot work here: kiln's

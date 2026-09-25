@@ -207,7 +207,8 @@ impl Provider for NodeProvider {
         // Runtime version: `version` override, else `.nvmrc`/`.node-version`,
         // else the current default. Slim runtime, full image for the build.
         let detected = crate::providers::version_from_file(ctx, ".nvmrc")
-            .or_else(|| crate::providers::version_from_file(ctx, ".node-version"));
+            .or_else(|| crate::providers::version_from_file(ctx, ".node-version"))
+            .or_else(|| crate::providers::version_from_tool_files(ctx, &["node", "nodejs"]));
         let version = crate::providers::resolve_version(ctx, detected, "22")?;
         let base_image = format!("node:{version}-slim");
         let build_image = format!("node:{version}");
@@ -462,6 +463,32 @@ mod tests {
     fn nvmrc_sets_node_version() {
         let dir = tempfile::tempdir().unwrap();
         setup_node_project(dir.path(), "npm");
+        std::fs::write(dir.path().join(".nvmrc"), "18\n").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "node:18-slim"));
+    }
+
+    #[test]
+    fn tool_versions_sets_node_version() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_node_project(dir.path(), "npm");
+        std::fs::write(dir.path().join(".tool-versions"), "nodejs 21.6.2\n").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "node:21.6.2-slim"));
+    }
+
+    #[test]
+    fn mise_toml_sets_node_version_and_nvmrc_wins_over_it() {
+        let dir = tempfile::tempdir().unwrap();
+        setup_node_project(dir.path(), "npm");
+        std::fs::write(dir.path().join("mise.toml"), "[tools]\nnode = \"20\"\n").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "node:20-slim"));
+
+        // a language-native file (.nvmrc) outranks the generic mise config
         std::fs::write(dir.path().join(".nvmrc"), "18\n").unwrap();
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = NodeProvider.plan(&ctx).unwrap();

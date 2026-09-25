@@ -24,6 +24,24 @@ impl RustProvider {
             .unwrap_or("app")
             .to_string()
     }
+
+    /// The Rust version pinned by a `rust-toolchain.toml` `[toolchain] channel`
+    /// (or a plain `rust-toolchain` file). Returns `None` for a non-numeric
+    /// channel such as `stable` or `nightly`, which fall back to the default.
+    fn version_from_toolchain(ctx: &AppContext) -> Option<String> {
+        if let Ok(content) = ctx.read_file("rust-toolchain.toml") {
+            if let Ok(doc) = content.parse::<toml::Table>() {
+                if let Some(channel) = doc.get("toolchain").and_then(|t| t.get("channel")).and_then(toml::Value::as_str)
+                {
+                    return crate::providers::normalize_version(channel);
+                }
+            }
+        }
+        ctx.read_file("rust-toolchain")
+            .ok()
+            .as_deref()
+            .and_then(crate::providers::normalize_version)
+    }
 }
 
 impl Provider for RustProvider {
@@ -38,7 +56,9 @@ impl Provider for RustProvider {
     fn plan(&self, ctx: &AppContext) -> Result<BuildPlan> {
         let binary = Self::binary_name(ctx);
         crate::sanitize::validate_token("Cargo.toml package name", &binary)?;
-        let version = crate::providers::resolve_version(ctx, None, "1.85")?;
+        let detected = Self::version_from_toolchain(ctx)
+            .or_else(|| crate::providers::version_from_tool_files(ctx, &["rust"]));
+        let version = crate::providers::resolve_version(ctx, detected, "1.85")?;
         let build_image = format!("rust:{version}");
 
         let build_stage = Stage {
@@ -123,6 +143,34 @@ mod tests {
         .unwrap();
         let plan = RustProvider.plan(&ctx).unwrap();
         assert!(plan.stages.iter().any(|s| s.base_image == "rust:1.82"));
+    }
+
+    #[test]
+    fn rust_toolchain_toml_sets_version() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("rust-toolchain.toml"), "[toolchain]\nchannel = \"1.81\"\n").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = RustProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "rust:1.81"));
+    }
+
+    #[test]
+    fn non_numeric_toolchain_channel_falls_back_to_default() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("rust-toolchain.toml"), "[toolchain]\nchannel = \"stable\"\n").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = RustProvider.plan(&ctx).unwrap();
+        assert!(plan.stages.iter().any(|s| s.base_image == "rust:1.85"));
     }
 
     #[test]

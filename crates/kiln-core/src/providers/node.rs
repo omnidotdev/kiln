@@ -77,10 +77,51 @@ impl NodeProvider {
             })
     }
 
+    /// The major version of a dependency from its package.json version spec
+    /// (e.g. `^17.1.0` -> 17), ignoring range prefixes. `None` if absent or
+    /// not a plain numeric spec (`workspace:*`, `next`, a git URL).
+    fn dependency_major(ctx: &AppContext, name: &str) -> Option<u32> {
+        let pkg = ctx.read_file("package.json").ok()?;
+        let parsed: serde_json::Value = serde_json::from_str(&pkg).ok()?;
+        let spec = ["dependencies", "devDependencies"].iter().find_map(|section| {
+            parsed
+                .get(section)
+                .and_then(|deps| deps.get(name))
+                .and_then(|v| v.as_str())
+        })?;
+        let digits: String = spec
+            .trim_start_matches(['^', '~', '>', '=', 'v', ' '])
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        digits.parse().ok()
+    }
+
+    /// The static output directory for an Angular app, read from `angular.json`'s
+    /// build `outputPath`. Angular 17+ nests the browser bundle under a `browser`
+    /// subdirectory, so that is appended for those versions. `None` if the file
+    /// or field is missing, so a non-standard setup falls back to a Node runtime.
+    fn angular_output_dir(ctx: &AppContext) -> Option<String> {
+        let content = ctx.read_file("angular.json").ok()?;
+        let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+        let projects = json.get("projects")?.as_object()?;
+        let out = projects.values().find_map(|p| {
+            p.pointer("/architect/build/options/outputPath")
+                .and_then(|v| v.as_str())
+        })?;
+        crate::sanitize::validate_token("angular outputPath", out).ok()?;
+        if Self::dependency_major(ctx, "@angular/core").is_some_and(|major| major >= 17) {
+            Some(format!("{out}/browser"))
+        } else {
+            Some(out.to_string())
+        }
+    }
+
     /// The static output directory to serve for a build-to-static framework
-    /// (Next.js `output: export`, Vite, Astro, or Create React App), if this is
-    /// one. Such a project builds to static assets and is served by a static
-    /// file server rather than a Node process.
+    /// (Next.js `output: export`, Vite, Astro, Create React App, `SvelteKit` with
+    /// the static adapter, or Angular), if this is one. Such a project builds to
+    /// static assets and is served by a static file server rather than a Node
+    /// process.
     fn static_output_dir(ctx: &AppContext) -> Option<String> {
         if Self::is_next_static_export(ctx) {
             return Some("out".to_string());
@@ -90,6 +131,14 @@ impl NodeProvider {
         }
         if Self::has_dependency(ctx, "react-scripts") {
             return Some("build".to_string());
+        }
+        // SvelteKit with the static adapter prerenders the whole app to `build/`;
+        // without it, SvelteKit is a Node server and is not served statically.
+        if Self::has_dependency(ctx, "@sveltejs/adapter-static") {
+            return Some("build".to_string());
+        }
+        if Self::has_dependency(ctx, "@angular/core") {
+            return Self::angular_output_dir(ctx);
         }
         None
     }
@@ -631,6 +680,59 @@ mod tests {
         let ctx = AppContext::new(dir.path()).unwrap();
         let plan = NodeProvider.plan(&ctx).unwrap();
         assert_eq!(plan.start_command.as_deref(), Some("serve build -l 3000"));
+    }
+
+    #[test]
+    fn sveltekit_static_adapter_serves_build_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"w","scripts":{"build":"vite build"},"devDependencies":{"@sveltejs/kit":"^2","@sveltejs/adapter-static":"^3"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert_eq!(plan.start_command.as_deref(), Some("serve build -l 3000"));
+    }
+
+    #[test]
+    fn angular_v17_serves_output_browser_subdir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"w","scripts":{"build":"ng build"},"dependencies":{"@angular/core":"^17.1.0"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("angular.json"),
+            r#"{"projects":{"w":{"architect":{"build":{"options":{"outputPath":"dist/w"}}}}}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        // Angular 17+ writes the browser bundle under <outputPath>/browser
+        assert_eq!(plan.start_command.as_deref(), Some("serve dist/w/browser -l 3000"));
+    }
+
+    #[test]
+    fn angular_pre_v17_serves_output_path_directly() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"w","scripts":{"build":"ng build"},"dependencies":{"@angular/core":"^15.2.0"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("angular.json"),
+            r#"{"projects":{"w":{"architect":{"build":{"options":{"outputPath":"dist/w"}}}}}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        let ctx = AppContext::new(dir.path()).unwrap();
+        let plan = NodeProvider.plan(&ctx).unwrap();
+        assert_eq!(plan.start_command.as_deref(), Some("serve dist/w -l 3000"));
     }
 
     #[test]
